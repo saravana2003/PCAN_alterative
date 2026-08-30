@@ -854,3 +854,12 @@ PowerShell:
   combined image, and don't advance until a step passes or its failure is
   understood and logged — so a bug stays local instead of rippling. Step 0
   (hello_world) is a hard gate: if the debug link fails, stop.
+- 2026-08-30: Repo is now under git and pushed to
+  https://github.com/saravana2003/PCAN_alterative (branch main, first commit
+  d315a76, 53 files). Committed as saravana2003 <asaravanakumar2k3@gmail.com>
+  set as REPO-LOCAL git identity — the global identity on this machine is a
+  different account (saravanariver), so don't rely on the global config here.
+  .gitignore excludes the whole west workspace (.west/ zephyr/ modules/
+  bootloader/ tools/ doc/), .venv/, build/, and *.pdf (vendor datasheets are
+  not ours to redistribute). To rebuild the workspace from a fresh clone:
+  `west init -l` + `west update`. Commit the day's bring-up results tomorrow.
