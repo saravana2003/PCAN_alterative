@@ -1,0 +1,23 @@
+# West-managed workspace (T2 topology) — not part of our source tree
+/.west/
+/zephyr/
+/modules/
+/bootloader/
+/tools/
+/nrf/
+/test/
+/doc/
+
+# Vendor datasheet extracts / reference PDFs (not ours to redistribute)
+*.pdf
+
+# Python virtual env
+/.venv/
+
+# Build output
+build/
+/twister-out*/
+
+# Editor / OS
+*.swp
+.DS_Store

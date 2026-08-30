@@ -1,0 +1,46 @@
+/*
+ * Phase 3 — MCUboot fixed-partition layout for the EK-RA8D1 on-chip code
+ * flash (flash0, renesas,ra-nv-code-flash, 2016 KiB @ 0x02000000).
+ *
+ * Shared by both sysbuild images:
+ *   - can_logger.overlay  (the application image, links into slot0)
+ *   - mcuboot.overlay     (the bootloader image, links at flash0 base)
+ *
+ * The stock zephyr/boards/renesas/ek_ra8d1/ek_ra8d1.dts defines NO partition
+ * table on flash0, so this is a clean add (contrast flash1 / the OSPI NOR,
+ * which are left untouched — Phase 2D's littlefs store stays on &s28hl512t).
+ *
+ * flash0 erase geometry (r7fa8d1bhecbd.dtsi):
+ *   0x00000..0x10000  8 x 8 KiB blocks   (region 0)
+ *   0x10000..0x1F8000 61 x 32 KiB blocks (region 1)
+ * Every partition boundary below is a multiple of 0x8000 (32 KiB), so each
+ * slot is erase-block aligned across the whole 32 KiB region.
+ *
+ *   boot_partition  0x000000  128 KiB  (0x00000..0x20000)
+ *   slot0_partition 0x020000  928 KiB  (0x20000..0x108000)  image-0 / primary
+ *   slot1_partition 0x108000  928 KiB  (0x108000..0x1F0000) image-1 / secondary
+ *   (0x1F0000..0x1F8000, 32 KiB, left unallocated)
+ */
+
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		boot_partition: partition@0 {
+			label = "mcuboot";
+			reg = <0x00000000 0x00020000>;
+		};
+
+		slot0_partition: partition@20000 {
+			label = "image-0";
+			reg = <0x00020000 0x000e8000>;
+		};
+
+		slot1_partition: partition@108000 {
+			label = "image-1";
+			reg = <0x00108000 0x000e8000>;
+		};
+	};
+};

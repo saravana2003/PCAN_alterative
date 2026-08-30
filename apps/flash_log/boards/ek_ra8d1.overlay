@@ -1,0 +1,59 @@
+/*
+ * App-local devicetree overlay for apps/flash_log on the EK-RA8D1.
+ * Zephyr auto-applies <app>/boards/<board>.overlay by filename.
+ *
+ * Re-partitions the on-board 64 MB Octo-SPI NOR flash (U3, S28HL512T, node
+ * &s28hl512t, controller &ospi0) for a littlefs log store. The stock board dts
+ * gives it one whole-chip partition labelled "nor"; we replace that.
+ *
+ * Erase geometry (from the board node's pages_layout, verified in
+ * zephyr/boards/renesas/ek_ra8d1/ek_ra8d1.dts):
+ *     0x00000000 .. 0x00020000   32 x 4 KiB sectors
+ *     0x00020000 .. 0x00040000   1 x 128 KiB sector
+ *     0x00040000 .. 0x04000000   255 x 256 KiB sectors
+ * Zephyr's littlefs flash backend uses the LARGEST page size that overlaps the
+ * partition and assumes that erase size works across the whole partition
+ * (subsys/fs/littlefs_fs.c get_block_size()). So the littlefs partition starts
+ * at 0x40000 to sit entirely in the uniform 256 KiB-sector region; the first
+ * 256 KiB is left unallocated (reserved for a future NVS/settings partition).
+ */
+
+&s28hl512t {
+	/delete-node/ partitions;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		canlog_part: partition@40000 {
+			label = "canlog";
+			/* 0x00040000 .. 0x04000000  (64 MiB - 256 KiB = 63.75 MiB) */
+			reg = <0x00040000 0x03FC0000>;
+		};
+	};
+};
+
+/ {
+	fstab {
+		compatible = "zephyr,fstab";
+
+		lfs_canlog: lfs_canlog {
+			compatible = "zephyr,fstab,littlefs";
+			mount-point = "/lfs";
+			partition = <&canlog_part>;
+			/* read/prog match the driver's write-block-size=1; cache 64
+			 * is a factor of the 256 KiB block size and a multiple of
+			 * prog-size, per the binding's constraints.
+			 */
+			read-size = <16>;
+			prog-size = <16>;
+			cache-size = <64>;
+			lookahead-size = <32>;
+			block-cycles = <512>;
+			/* No `automount;` - flash_log.c mounts explicitly so it
+			 * owns the mount/unmount lifecycle.
+			 */
+		};
+	};
+};

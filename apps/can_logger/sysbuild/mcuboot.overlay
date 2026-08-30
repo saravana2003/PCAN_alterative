@@ -1,0 +1,10 @@
+/*
+ * Phase 3 — sysbuild overlay for the MCUboot bootloader image.
+ * Auto-applied by sysbuild as <app>/sysbuild/mcuboot.overlay.
+ *
+ * MCUboot only needs to see the same partition table; it links at the
+ * flash0 base (= boot_partition offset 0), so no zephyr,code-partition
+ * override is set here.
+ */
+
+#include "mcuboot_partitions.dtsi"

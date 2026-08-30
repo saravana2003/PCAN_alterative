@@ -1,0 +1,18 @@
+/*
+ * App-local devicetree overlay for apps/usb_cdc on the EK-RA8D1.
+ * Zephyr auto-applies <app>/boards/<board>.overlay by filename.
+ *
+ * Adds a CDC-ACM function to the USB device controller. zephyr_udc0 is the
+ * `udc` child of &usbhs (compatible "renesas,ra-udc"), already set
+ * status = "okay" by boards/renesas/ek_ra8d1/ek_ra8d1.dts - usbhs is the
+ * High-Speed USB *device* port and is the one enabled by the stock board
+ * (usbfs is only pinctrl'd, not enabled). Same node shape as
+ * zephyr/samples/subsys/usb/cdc_acm/app.overlay.
+ */
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "CLP CDC-ACM";
+	};
+};

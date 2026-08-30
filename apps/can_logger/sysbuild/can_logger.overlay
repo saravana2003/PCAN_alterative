@@ -1,0 +1,17 @@
+/*
+ * Phase 3 — sysbuild overlay for the can_logger *application* image.
+ * Auto-applied by sysbuild as <app>/sysbuild/<image>.overlay (image name =
+ * app dir name = "can_logger"). NOT applied to a plain non-sysbuild build.
+ *
+ * Adds the MCUboot partition table and points the application's code
+ * partition at slot0, so the linked image runs from 0x02020000 and carries
+ * an imgtool header/trailer for MCUboot to verify and chainload.
+ */
+
+#include "mcuboot_partitions.dtsi"
+
+/ {
+	chosen {
+		zephyr,code-partition = &slot0_partition;
+	};
+};

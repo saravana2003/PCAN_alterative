@@ -1,0 +1,29 @@
+/*
+ * App-local devicetree overlay for apps/eth_doip on the EK-RA8D1.
+ * Zephyr auto-applies <app>/boards/<board>.overlay by filename.
+ *
+ * WHY THIS EXISTS - a pin conflict in the stock ek_ra8d1 board files:
+ *
+ * The stock board uses the "ETHERNET B" RMII pin-mux (board manual Table 24,
+ * SW1-5 ON / SW1-4 OFF):
+ *     mdio_default : ET0_MDC = P401, ET0_MDIO = P402
+ *     ether_default: RMII on P403/P405/P406/P700..P705
+ * But it ALSO enables &i3c0, whose i3c0_default group claims:
+ *     I3C0_SCL = P400, I3C0_SDA = P401
+ * => P401 is requested by BOTH mdio (ET0_MDC) and i3c0 (I3C0_SDA). Zephyr's
+ * RA pinctrl writes PFS registers at driver init with no build-time conflict
+ * check, so on real hardware whichever driver inits last wins P401 and the
+ * other peripheral breaks silently.
+ *
+ * This project does not use I3C, so disable it to give the MDIO/Ethernet MAC
+ * sole ownership of P401. (The camera CEU - which also overlaps the RMII pins -
+ * is already status=disabled in the stock dts, so no action needed there.)
+ *
+ * Physical switches for Ethernet on this board (cannot be verified without
+ * hardware): SW1-5 ON (ETH-B), SW1-4 OFF (ETH-A), SW1-3 OFF (camera),
+ * SW1-8 OFF (I3C). SW1-7 (SDRAM, ON by default) does NOT conflict with ETH-B.
+ */
+
+&i3c0 {
+	status = "disabled";
+};

@@ -1,0 +1,54 @@
+/*
+ * Project-wide devicetree overlay for the EK-RA8D1 (R7FA8D1BHECBD).
+ *
+ * Purpose: move CAN-FD channel 0 (CTX0/CRX0) off the pins Zephyr's stock
+ * board file uses, because those collide with peripherals this project needs
+ * at the same time.
+ *
+ * Stock ek_ra8d1 canfd0_default (zephyr/boards/renesas/ek_ra8d1/
+ * ek_ra8d1-pinctrl.dtsi:87):
+ *     CTX0 = P401   <- also ET0_MDC   (mdio_default) AND I3C0 SCL (i3c0_default)
+ *     CRX0 = P402   <- also ET0_MDIO  (mdio_default)
+ * Renesas FSP default P704/P705 is no good either:
+ *     P704 = RMII0_RX_ER_B, P705 = RMII0_CRS_DV_B  (ether_default)
+ *
+ * This project runs CAN-FD + on-chip Ethernet (RMII + MDIO) + USB HS
+ * (+ USB FS if Phase 2C needs it) + Octo-SPI NOR flash + SDRAM controller,
+ * all concurrently. The only conflict-free CAN-FD ch0 pin pair is on Port 2,
+ * which the stock EK-RA8D1 config does not use at all (ioport2 is not even
+ * enabled; SDHI0/SDHI1 are both disabled; the sole Port 2 reference,
+ * acmphs_vcout on P208, is /omit-if-no-ref/ and unreferenced).
+ *
+ *     CTX0 (CAN TX, MCU -> transceiver TXD) = P203
+ *     CRX0 (CAN RX, transceiver RXD -> MCU) = P202
+ *
+ * Precedent: the Renesas ek_ra8t2 board file routes CAN-FD ch0 to exactly
+ * this pair (CRX0=P202, CTX0=P203). RA8T2 is an adjacent RA8 device with the
+ * same CAN-FD IP, but it is NOT the same silicon as the RA8D1 -- so this
+ * mapping still needs a cross-check against the R7FA8D1BH datasheet
+ * ("Table 1.x List of Pin and Pin Functions", Peripheral Select columns)
+ * to confirm P202 = CANFD0_CRX0 and P203 = CANFD0_CTX0 on this part before
+ * trusting it on hardware. The Zephyr RA pinctrl driver does not validate
+ * PSEL capability at build time, so a wrong choice builds fine and simply
+ * won't work on the bench.
+ *
+ * Transceiver STB/standby is hard-wired to GND on the breadboard
+ * (permanent normal mode) -- no MCU GPIO controls it, so there is no
+ * enable/standby pin entry here on purpose.
+ */
+
+#include <zephyr/dt-bindings/pinctrl/renesas/pinctrl-ra.h>
+
+&pinctrl {
+	/* Overrides the same-named node in ek_ra8d1-pinctrl.dtsi; the psels
+	 * property is replaced wholesale.
+	 */
+	canfd0_default: canfd0_default {
+		group1 {
+			/* CRX0 CTX0 */
+			psels = <RA_PSEL(RA_PSEL_CANFD, 2, 2)>,   /* CRX0 -> P202 */
+				<RA_PSEL(RA_PSEL_CANFD, 2, 3)>;   /* CTX0 -> P203 */
+			drive-strength = "high";
+		};
+	};
+};

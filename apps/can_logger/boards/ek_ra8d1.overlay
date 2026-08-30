@@ -1,0 +1,52 @@
+/*
+ * App-local devicetree overlay for apps/can_logger on the EK-RA8D1.
+ * Zephyr auto-applies <app>/boards/<board>.overlay by filename.
+ *
+ * Mirrors the project overlay D:/BITS_ASSIGNMENTS/ESD/SITUATIONAL_LEARNING/
+ * boards/ek_ra8d1.overlay (kept in sync by hand) and additionally sets the
+ * CAN-FD bitrates for this app.
+ *
+ * CANFD0 pin remap (see STATE.md "CANFD0 pin decision" for the full
+ * rationale): stock Zephyr uses P401/P402 which collide with Ethernet MDIO;
+ * Renesas FSP default P704/P705 collide with RMII RX_ER/CRS_DV. Port 2 is
+ * unused by the stock ek_ra8d1 config.
+ *     CTX0 (CAN TX, MCU -> transceiver TXD) = P203
+ *     CRX0 (CAN RX, transceiver RXD -> MCU) = P202
+ * NOTE: P202/P203 = CANFD0 is not verifiable from the Zephyr tree (no pin
+ * capability table in-tree); confirm against the R7FA8D1BH datasheet before
+ * trusting on hardware. Transceiver STB is hard-wired to GND (normal mode),
+ * so there is no enable/standby GPIO entry here on purpose.
+ */
+
+#include <zephyr/dt-bindings/pinctrl/renesas/pinctrl-ra.h>
+
+&pinctrl {
+	/* Overrides the same-named node in
+	 * zephyr/boards/renesas/ek_ra8d1/ek_ra8d1-pinctrl.dtsi; psels replaced.
+	 */
+	canfd0_default: canfd0_default {
+		group1 {
+			/* CRX0 CTX0 */
+			psels = <RA_PSEL(RA_PSEL_CANFD, 2, 2)>,   /* CRX0 -> P202 */
+				<RA_PSEL(RA_PSEL_CANFD, 2, 3)>;   /* CTX0 -> P203 */
+			drive-strength = "high";
+		};
+	};
+};
+
+&canfd0 {
+	/* Arbitration phase 500 kbit/s, FD data phase 2 Mbit/s — common
+	 * automotive CAN-FD rates and safely within any CAN-FD transceiver.
+	 * Sample points left unset -> driver auto-selects (87.5% / 80% / 75%).
+	 */
+	bitrate = <500000>;
+	bitrate-data = <2000000>;
+
+	/* Passive external transceiver on the breadboard (STB tied to GND).
+	 * max-bitrate documents the data-phase ceiling used for bitrate
+	 * validation; tighten to the real transceiver datasheet once known.
+	 */
+	can-transceiver {
+		max-bitrate = <5000000>;
+	};
+};
