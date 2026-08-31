@@ -1,7 +1,20 @@
 # Zephyr bug report (draft): EK-RA8D1 USB-HS CDC-ACM bulk transfers never reach the host
 
-**Status:** written up 2026-08-31, **not yet reported upstream.** This file is the
-prepared material for a `zephyrproject-rtos/zephyr` GitHub issue when time permits.
+**Status:** root-caused and fixed locally 2026-08-31 (`patches/0002-usb-device-ra-send-zlp-on-bulk-in.patch`),
+hardware-verified. **Not yet reported upstream** — no `gh` CLI on the build box.
+
+## Filing this upstream
+
+- Repo: **`zephyrproject-rtos/hal_renesas`** (the file is vendored FSP), with a
+  cross-reference issue in `zephyrproject-rtos/zephyr` since that is where users
+  hit it.
+- Title: *drivers: ra: r_usb_device: `process_pipe_xfer()` never commits a bulk-IN
+  zero-length packet — CDC-ACM TX wedges on ek_ra8d1*
+- One-line: the ZLP branch of `process_pipe_xfer()` only re-asserts `BVAL` when it
+  is already set, so a freshly-allocated empty buffer's ZLP is never transmitted,
+  no `BRDY` fires, `USBD_EVENT_XFER_COMPLETE` never comes, and
+  `usbd_cdc_acm`'s `CDC_ACM_TX_FIFO_BUSY` stays set forever.
+- The "ROOT CAUSE FOUND" section below is the issue body; the fix diff is the patch.
 
 Everything below was observed on real hardware in this project's Phase 5 bring-up.
 Nothing here is speculative; where a cause is unproven it is labelled as such.
@@ -145,7 +158,91 @@ is present in current mainline, not only in the pinned snapshot.
 
 ---
 
-## Where the fault is likely to be (UNPROVEN — do not state as fact upstream)
+## ROOT CAUSE FOUND (2026-08-31) — it is in hal_renesas, not Zephyr's USB subsys
+
+The earlier "still present upstream" check only looked at `drivers/usb/` and
+`subsys/usb/` in the Zephyr tree. **The bug is not there.** It is in the
+vendored Renesas FSP USB device driver:
+`modules/hal/renesas/drivers/ra/fsp/src/r_usb_device/r_usb_device.c`,
+`process_pipe_xfer()`.
+
+Chain:
+
+1. `usbd_cdc_acm_enable()` sets `zlp_needed = true` and schedules the TX work.
+2. `cdc_acm_tx_fifo_handler()` runs with `echo_mitigated == false`, so it
+   allocates a buffer, adds **0** bytes, sets `CDC_ACM_TX_FIFO_BUSY`, and
+   enqueues it. The very first bulk IN transfer of the device's life is a ZLP.
+3. `R_USBD_XferStart(ep, buf, 0)` → `process_pipe_xfer(..., total_bytes = 0)` →
+   the IN / ZLP branch:
+
+   ```c
+   *d0fifosel = num;
+   if ((*d0fifoctr & R_USB_CFIFOCTR_BVAL_Msk) != 0) {
+       *d0fifoctr = R_USB_CFIFOCTR_BVAL_Msk;
+   }
+   *d0fifosel = 0;
+   ```
+
+   For a freshly selected empty buffer `BVAL` is 0, so the body is skipped and
+   **BVAL is never written**. Without BVAL the controller never commits the
+   empty buffer, no packet goes out, and no `BRDY` interrupt is raised.
+4. `process_pipe_brdy()` → `USBD_EVENT_XFER_COMPLETE` never fires →
+   `udc_event_xfer_complete()` never runs → `usbd_cdc_acm_request()` never
+   clears `CDC_ACM_TX_FIFO_BUSY`.
+5. `CDC_ACM_TX_FIFO_BUSY` stuck forever → every later `cdc_acm_tx_fifo_handler()`
+   bails at `atomic_test_and_set_bit(... CDC_ACM_TX_FIFO_BUSY)`. All real data
+   is stranded in the ring buffer — exactly the observed `remaining space
+   991 → 958` behaviour, and exactly candidate 1 below.
+
+The non-ZLP path in the same file (`pipe_xfer_in()`) writes
+`*d0fifoctr = R_USB_D0FIFOCTR_BVAL_Msk` **unconditionally** for a short final
+packet. The ZLP branch just needs to do the same.
+
+### Local fix applied (2026-08-31)
+
+`r_usb_device.c`, `process_pipe_xfer()` ZLP branch — select the FIFO, wait for
+it to be ready, then set BVAL unconditionally:
+
+```c
+*d0fifosel = num | R_USB_FIFOSEL_MBW_16BIT |
+             (BYTE_ORDER == BIG_ENDIAN ? R_USB_FIFOSEL_BIGEND : 0);
+pipe_wait_for_ready(p_ctrl, num);
+*d0fifoctr = R_USB_D0FIFOCTR_BVAL_Msk;
+*d0fifosel = 0;
+FSP_HARDWARE_REGISTER_WAIT((*d0fifosel & R_USB_D0FIFOSEL_CURPIPE_Msk), 0);
+```
+
+Kept as `patches/0002-usb-device-ra-send-zlp-on-bulk-in.patch`; re-apply after
+any `west update` (`patches/README.md`).
+
+### Why bumping Zephyr never helped
+
+`modules/hal/renesas` is pinned to the **same** revision (`f2eb9bc`) by both the
+old (`f80761e`) and new (`66e5135`) Zephyr manifests, so the accidental mainline
+pull on 2026-08-31 could not have changed this file. STATE.md §3b's conclusion
+("updating Zephyr cannot fix the USB bug") was right; the reasoning was
+incomplete — the fix was never going to be in the Zephyr tree at all.
+
+### Hardware test status — FIX CONFIRMED ON HARDWARE (2026-08-31)
+
+Tree: Zephyr `66e5135ffc3` + hal_renesas `f2eb9bc` + patch 0002.
+
+- [x] **`apps/usb_cdc`, bulk IN**: on DTR the host reads a **33-byte** CLP HELLO
+  frame over USB-HS (`05 01 05 02 ... "usb_cdc phase-2c v0.1" ... 0b 92 00`).
+  Device console: `usb_link: host connected (DTR) - sending HELLO`.
+  **Pre-fix this was 0 bytes, indefinitely.**
+- [x] **bulk OUT** (was never the broken direction, checked anyway): host writes
+  a CLP `CAN_TX` frame → device console logs
+  `main: host asked to TX: id=0x00000123 dlc=8 flags=0x00 tag=48879`.
+- [ ] stock `samples/subsys/usb/cdc_acm` echo — **not re-run this session** (ran
+  out of bench time). The fix is class-agnostic (any CDC-ACM instance enqueues a
+  ZLP on enable via `usbd_cdc_acm_enable()`), so `usb_cdc` passing is strong
+  evidence, but re-running the stock sample echo is the cleanest thing to attach
+  to the upstream issue — do it before filing.
+
+---
+
+## Where the fault is likely to be (ORIGINAL NOTE — superseded by "ROOT CAUSE FOUND" above)
 
 The break is between `cdc_acm_tx_fifo_handler()` and the UDC driver actually
 completing a bulk IN transfer. Two candidates, neither confirmed:

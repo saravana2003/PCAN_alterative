@@ -7,9 +7,9 @@
 | 0 | `hello_world` | **PASS** — debug link, flash tool, serial console all good |
 | 1 | `gpio_timer` | **PASS** — LEDs, both buttons, timer measured at 100.26 ms/tick |
 | 2 | `can_logger` | **PASS** — CAN-FD proven both directions vs PCAN (FD/BRS deferred, see below) |
-| 3 | `usb_cdc` | **BLOCKED** — our bug fixed + USB enumerates, but bulk transfer is broken *inside Zephyr's RA USB-HS stack*. See `zephyr_usb_hs_bug.md`. Do not re-debug as an app bug. |
-| 4 | `flash_log` | **NEXT** |
-| 5 | `eth_doip` | not started |
+| 3 | `usb_cdc` | **PASS** (2026-08-31 s2) — RA USB-HS bulk-IN ZLP bug root-caused in hal_renesas FSP and fixed (`patches/0002`); host reads the CLP HELLO frame, both directions verified. `zephyr_usb_hs_bug.md`. |
+| 4 | `flash_log` | **BLOCKED ON HARDWARE** — OSPI NOR (U3) answers `0xFF` to every command, warm/cold/power-cycled. Not software. Needs a physical check of U3 + OSPI config links. `zephyr_ospi_cs_reset_bug.md`. |
+| 5 | `eth_doip` | **NEXT** (move CAN wires off P704/P705 first) |
 | 6 | MCUboot | not started (unblocked — step 2 passes) |
 
 Full detail for every result is in `STATE.md`. Work top to bottom. Do not start

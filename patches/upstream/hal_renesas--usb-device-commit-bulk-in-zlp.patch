@@ -1,0 +1,76 @@
+From 3238f4ae21e396fc5b7488695875acc5c25d654c Mon Sep 17 00:00:00 2001
+From: Saravanakumar A <asaravanakumar2k3@gmail.com>
+Date: Mon, 31 Aug 2026 23:57:23 +0530
+Subject: [PATCH] drivers: ra: r_usb_device: commit bulk IN zero-length packets
+
+process_pipe_xfer()'s IN path for total_bytes == 0 selects the pipe FIFO
+and then only re-asserts BVAL when it happens to already be set:
+
+	*d0fifosel = num;
+	if ((*d0fifoctr & R_USB_CFIFOCTR_BVAL_Msk) != 0) {
+		*d0fifoctr = R_USB_CFIFOCTR_BVAL_Msk;
+	}
+
+For a freshly selected, empty pipe buffer BVAL is 0, so the body is
+skipped and BVAL is never written. The controller therefore never
+commits the empty buffer, no zero-length packet is transmitted, and no
+BRDY interrupt is raised, so process_pipe_brdy() never delivers
+USBD_EVENT_XFER_COMPLETE for the transfer.
+
+A bulk IN endpoint then stalls forever after its first ZLP. This is
+readily hit through CDC-ACM: usbd_cdc_acm_enable() primes a zero-length
+IN transfer, so on ek_ra8d1 (USB high-speed) CDC-ACM TX never starts --
+bytes written with uart_fifo_fill() accumulate in the class TX ring and
+are never forwarded to the host. Reproduces with the unmodified
+zephyr samples/subsys/usb/cdc_acm sample.
+
+Commit the ZLP the same way pipe_xfer_in() does for a short final
+packet: select the FIFO, wait for it to be ready, then set BVAL
+unconditionally.
+
+Verified on ek_ra8d1: with this change the host receives the CDC-ACM
+data the device sends on DTR (0 bytes before); host-to-device bulk OUT
+was already fine and still works.
+
+Signed-off-by: Saravanakumar A <asaravanakumar2k3@gmail.com>
+---
+ .../ra/fsp/src/r_usb_device/r_usb_device.c    | 23 +++++++++++++------
+ 1 file changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/ra/fsp/src/r_usb_device/r_usb_device.c b/drivers/ra/fsp/src/r_usb_device/r_usb_device.c
+index dd4674b..9f8a5e6 100644
+--- a/drivers/ra/fsp/src/r_usb_device/r_usb_device.c
++++ b/drivers/ra/fsp/src/r_usb_device/r_usb_device.c
+@@ -1280,13 +1280,22 @@ static inline fsp_err_t process_pipe_xfer (usbd_instance_ctrl_t * const p_ctrl,
+         }
+         else
+         {
+-            /* ZLP */
+-            *d0fifosel = num;
+-
+-            if ((*d0fifoctr & R_USB_CFIFOCTR_BVAL_Msk) != 0)
+-            {
+-                *d0fifoctr = R_USB_CFIFOCTR_BVAL_Msk;
+-            }
++            /* ZLP: commit an empty buffer so the controller transmits a
++             * zero-length packet. Select the pipe FIFO, wait until it is
++             * ready for CPU access, then set BVAL - exactly as pipe_xfer_in()
++             * does for a short final packet. The previous code only
++             * re-asserted BVAL when it was already set, so for a freshly
++             * selected (empty) buffer the ZLP was never actually sent and the
++             * BRDY / transfer-complete interrupt never arrived: a bulk IN
++             * endpoint stalls forever after its first ZLP. usbd_cdc_acm
++             * enqueues a ZLP on enable, so CDC-ACM TX never starts.
++             */
++            *d0fifosel = num | R_USB_FIFOSEL_MBW_16BIT |
++                         (BYTE_ORDER == BIG_ENDIAN ? R_USB_FIFOSEL_BIGEND : 0);
++
++            pipe_wait_for_ready(p_ctrl, num);
++
++            *d0fifoctr = R_USB_D0FIFOCTR_BVAL_Msk;
+ 
+             *d0fifosel = 0;
+ 
+-- 
+2.54.0.windows.1
+

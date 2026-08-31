@@ -1,0 +1,68 @@
+From 8854e5a821a54c402267cb8b96867a6e5b26d88a Mon Sep 17 00:00:00 2001
+From: Saravanakumar A <asaravanakumar2k3@gmail.com>
+Date: Mon, 31 Aug 2026 23:57:04 +0530
+Subject: [PATCH] drivers: flash: flash_renesas_ra_ospi_b: reset the configured
+ chip-select
+
+flash_renesas_ra_ospi_b_spi_mode_init() resets the attached flash by
+driving the OM_RESET line for chip-select 0 only:
+
+	R_XSPI0->LIOCTL_b.RSTCS0 = 0;
+	k_sleep(K_USEC(500));
+	R_XSPI0->LIOCTL_b.RSTCS0 = 1;
+
+But the device may be attached to chip-select 1 (the driver configures
+.channel = OSPI_B_DEVICE_NUMBER_1), and RSTCS0/RSTCS1 are independent
+bits in XSPI0.LIOCTL. RSTCS1 is never written anywhere in the driver, so
+on a board whose OSPI-B flash is on CS1 (e.g. ek_ra8d1, whose s28hl512t
+node is at reg = <0x90000000 ...>) the "reset flash device" step does
+nothing and the device can be left in a non-1S protocol mode across a
+warm reboot.
+
+The same function two lines earlier already indexes the CS correctly
+(R_XSPI0->LIOCFGCS_b[p_ctrl->channel].DDRSMPEX). Make the reset match by
+selecting RSTCS0/RSTCS1 from p_ctrl->channel.
+
+Found by code inspection during ek_ra8d1 bring-up; not functionally
+verified because the OSPI NOR on the board sample in hand is
+non-responsive (unrelated hardware issue).
+
+Signed-off-by: Saravanakumar A <asaravanakumar2k3@gmail.com>
+---
+ drivers/flash/flash_renesas_ra_ospi_b.c | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/flash/flash_renesas_ra_ospi_b.c b/drivers/flash/flash_renesas_ra_ospi_b.c
+index 7dbb77696d5..62733f53ae2 100644
+--- a/drivers/flash/flash_renesas_ra_ospi_b.c
++++ b/drivers/flash/flash_renesas_ra_ospi_b.c
+@@ -171,10 +171,22 @@ static int flash_renesas_ra_ospi_b_spi_mode_init(ospi_b_instance_ctrl_t *p_ctrl,
+ 		return -EIO;
+ 	}
+ 
+-	/* Reset flash device by driving OM_RESET pin */
+-	R_XSPI0->LIOCTL_b.RSTCS0 = 0;
+-	k_sleep(K_USEC(500));
+-	R_XSPI0->LIOCTL_b.RSTCS0 = 1;
++	/* Reset flash device by driving the OM_RESET pin of the *configured*
++	 * chip-select. The attached device may be on CS0 or CS1
++	 * (p_ctrl->channel, as used just above for LIOCFGCS). Unconditionally
++	 * driving RSTCS0 never resets a device wired to CS1 (e.g. the S28HL512T
++	 * on the EK-RA8D1, reg = <0x90000000 ...>), so it can be left in a
++	 * non-1S protocol mode across a warm reboot.
++	 */
++	if (p_ctrl->channel == OSPI_B_DEVICE_NUMBER_1) {
++		R_XSPI0->LIOCTL_b.RSTCS1 = 0;
++		k_sleep(K_USEC(500));
++		R_XSPI0->LIOCTL_b.RSTCS1 = 1;
++	} else {
++		R_XSPI0->LIOCTL_b.RSTCS0 = 0;
++		k_sleep(K_USEC(500));
++		R_XSPI0->LIOCTL_b.RSTCS0 = 1;
++	}
+ 	k_sleep(K_NSEC(50));
+ 
+ 	/* Transfer write enable command */
+-- 
+2.54.0.windows.1
+

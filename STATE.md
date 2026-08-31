@@ -7,44 +7,56 @@ exactly where the last one left off without re-reading old chat history.
 
 ## >>> START HERE (new session, read this box first) <<<
 
-**Project state as of 2026-08-31.** The board is real, on the bench, and
-working. Phase 5 hardware bring-up is underway.
+**Project state as of 2026-08-31 (session 2).** Board on the bench. Phase 5
+bring-up: Steps 0/1/2 PASS, **Step 3 (USB) now PASSES too**, Step 4 (flash) is
+**blocked on hardware**, Steps 5/6 not started.
 
-**Do this next:** bring-up **Step 4 — `apps/flash_log`**, including the
-**power-cycle persistence check**. Plan: `docs/bringup_checklist.md`
-(Step 4 is marked "START HERE" there). It needs no USB and no CAN, so nothing
-blocks it.
+**Do this next:** Step 5 (`eth_doip`) — but FIRST physically move the CAN
+transceiver wires off P704/P705 (CAN/Ethernet are mutually exclusive). Step 4
+(`flash_log`) is stuck until the OSPI NOR is checked physically (see #4).
 
-**Five things that will otherwise waste your time:**
+**Six things that will otherwise waste your time:**
 
-1. **Flash failures on this board were a Renesas DLM lock, now fixed.** If
-   `west flash` ever fails weirdly again, read section 1 below BEFORE
-   investigating. It is not image size, not AV, not board damage — all were
-   tested and eliminated over several hours.
-2. **USB CDC-ACM is blocked by a bug in ZEPHYR, not in our code.** Proven with
-   Zephyr's own stock sample. Do not re-debug it as an application bug. Write-up
-   and upstream repro: `docs/zephyr_usb_hs_bug.md`. The GUI transport is the
-   **J-Link VCOM/UART** instead; CLP is transport-agnostic so nothing else
-   changes.
-3. **Zephyr must stay at commit `f80761e4940`** (detached HEAD, deliberate).
-   Every hardware result we have was validated on it. `git -C zephyr checkout
-   main` goes forward to `66e5135ffc3` if ever needed; going forward does NOT
-   fix the USB bug (verified — see section 3b).
-4. **CAN and Ethernet cannot run at the same time** on this board (P704/P705 are
-   bus-switch-routed to the Ethernet PHY). Before Step 5, physically move the
-   CAN transceiver's two wires off P704/P705. Sequential-use decision below.
-5. **The bench PCAN-USB is classic-CAN only**, so CAN-FD/BRS cannot be
-   validated with current equipment. Do not write the Phase 6 report as if FD
-   were tested.
+1. **Zephyr is now on mainline `66e5135ffc3`** (detached HEAD), bumped from
+   `f80761e4940` on user instruction, `west update` clean. All 6 apps rebuild
+   OK; can_logger/gpio_timer are byte-identical to the old tree. To go back:
+   `git -C zephyr checkout f80761e4940 && west update`.
+2. **USB-HS CDC-ACM bulk transfer is FIXED** — root cause was in **hal_renesas**
+   (FSP `r_usb_device.c`), NOT Zephyr's usb subsys: the bulk-IN ZLP was never
+   committed. Local patch `patches/0002-*`, hardware-verified (host reads the
+   HELLO frame; both directions work). `docs/zephyr_usb_hs_bug.md`. **The USB
+   CDC transport is viable again** — the J-Link VCOM fallback is no longer
+   forced. (usb_cdc still had our MAIN_STACK_SIZE fix from session 1.)
+3. **`patches/` holds two local fixes to west-managed trees.** Re-apply after any
+   `west update` — `patches/README.md`. Both also need filing upstream (no `gh`
+   on this box; drafts are the two `docs/zephyr_*_bug.md` files).
+4. **Step 4 / OSPI flash: blocked on HARDWARE, not software.** The S28HL512T
+   (U3) answers `0xFF` to every command — JEDEC ID, RDSR, CFR2V — before and
+   after reset, warm boot and confirmed power cycle. Controller transacts fine
+   (`FSP_SUCCESS`); the chip is electrically silent. Needs a physical check of
+   U3 population + the OSPI config links on the "MCU Native Pin Access" area
+   against the board schematic. The wrong-CS-reset driver bug we found+fixed
+   (`patches/0001-*`) is real but is NOT the cause. `docs/zephyr_ospi_cs_reset_bug.md`.
+5. **Renesas DLM lock** (session 1): if `west flash` fails weirdly, it's the
+   lifecycle state — section 1 below. Fixed with RFP "Initialize Device".
+6. **Bench PCAN-USB is classic-CAN only** — CAN-FD/BRS unvalidated.
+   **CAN + Ethernet mutually exclusive** — move the transceiver wires before Step 5.
 
-**Build/flash quick reference** (full notes in section 4 and "Build commands"):
+**Build/flash quick reference:**
 ```
 .venv\Scripts\west build -b ek_ra8d1 apps/<app> -d build/<app> [-p always]
-.venv\Scripts\west flash -d build/<app>          # J-Link, board is attached
+.venv\Scripts\west flash -d build/<app>          # J-Link, board attached
 ```
-Console = **COM12** (J-Link VCOM, 115200). Capture helpers live in the session
-scratchpad (`capreset.py`, `capboot.py`) — they are ~20 lines of pyserial, and
-section 4 explains why the reader must be attached BEFORE the board resets.
+Console = **COM12** (J-Link VCOM, 115200). Capture helpers: session scratchpad
+`cap.py` / `capwait.py` / `capcycle.py` (pyserial). **A full power cycle also
+re-enumerates the J-Link VCOM**, so `capcycle.py` (wait-for-disappear-then-
+reappear) is the one to use for power-cycle tests.
+
+**Python env note (session 2):** the venv's base install `C:\Python312\Lib` had
+been deleted, making every build painfully slow ("Could not find platform
+independent libraries <prefix>"). Restored `Lib` + `DLLs\*.pyd` from the
+identical 3.12.3 at `C:\Users\sumit\AppData\Local\Programs\Python\Python312`.
+If builds crawl again, check `C:\Python312\Lib\os.py` exists.
 
 ---
 
@@ -53,11 +65,41 @@ Phase 5 — HARDWARE BRING-UP. **First real hardware session: 2026-08-31.**
 Board, PCAN unit and rig are physically on the bench. Everything before today
 was build-only; CLAUDE.md's old "board not available" constraint is gone.
 
-STATUS: Steps 0, 1 and 2 of docs/bringup_checklist.md **PASS**.
-Step 3 (usb_cdc) is **PARTIAL**: our stack-overflow bug is FIXED and USB
-enumeration WORKS, but bulk data transfer is broken inside Zephyr's RA USB-HS
-stack — proven with Zephyr's own stock sample, so it is not our code.
-Steps 4-6 untouched.
+STATUS (after session 2, 2026-08-31): Steps 0, 1, 2 **PASS**. Step 3 (usb_cdc)
+**PASS** — the RA USB-HS bulk-transfer bug was root-caused (hal_renesas FSP,
+bulk-IN ZLP never committed) and fixed locally; verified end to end on hardware.
+Step 4 (flash_log) **BLOCKED ON HARDWARE** — the OSPI NOR is electrically silent
+(0xFF to every command); not a software issue. Steps 5, 6 not started.
+
+### Session 2 (2026-08-31) — Zephyr bump + both upstream bugs
+- **Zephyr `f80761e4940` -> `66e5135ffc3`** (mainline HEAD), detached HEAD, on
+  user instruction. `west update` clean (only fatfs/hal_nxp/nrf_wifi moved — none
+  used by ek_ra8d1; hal_renesas unchanged at f2eb9bc). Revert: `git -C zephyr
+  checkout f80761e4940 && west update`.
+- **Regression on the new tree: all 6 apps build clean.**
+  hello_world OK; can_logger 45428 B / gpio_timer 38012 B — **byte-identical** to
+  the session-1 records; flash_log 74424 B (+CS patch); usb_cdc 70932 B (~same);
+  eth_doip building at session end.
+- **USB fix — DONE + HW-verified.** `modules/hal/renesas/.../r_usb_device.c`
+  `process_pipe_xfer()`: the bulk-IN ZLP branch only re-asserted `BVAL` if
+  already set, so the ZLP was never sent, no `BRDY`, no `XFER_COMPLETE`, and
+  `usbd_cdc_acm`'s `CDC_ACM_TX_FIFO_BUSY` stuck forever (it enqueues a ZLP on
+  enable). Fix: select FIFO + `pipe_wait_for_ready` + set `BVAL` unconditionally,
+  like `pipe_xfer_in()`. `patches/0002-*`. HW: host now reads the 33-byte CLP
+  HELLO frame (was 0 bytes); host->device parse also verified.
+- **OSPI CS-reset fix — real defect, does NOT fix this board.** Driver drove
+  `RSTCS0` unconditionally; ek_ra8d1 NOR is on CS1. Fixed (`patches/0001-*`).
+  But bench diagnosis (heartbeat build + JEDEC/RDSR probes) shows the S28HL512T
+  answers `0xFF` to everything pre- and post-reset, warm and after a **confirmed
+  power cycle**. `LIOCTL=0x00030003` (resets released), controller OK. => the
+  flash chip is not responding at all — a board/population/config-link problem
+  on this unit. Step 4 needs a physical hardware check, not more driver work.
+- **`patches/`** (new dir) + `patches/README.md`: carries both fixes since
+  zephyr/ and modules/ are git-ignored; re-apply after `west update`.
+- Both bugs still need upstream filing (no `gh` CLI here). Issue text is in
+  `docs/zephyr_usb_hs_bug.md` (-> hal_renesas) and `docs/zephyr_ospi_cs_reset_bug.md`
+  (-> zephyr).
+- Fixed a broken venv (missing `C:\Python312\Lib`) that was crippling build speed.
 
 ### Where things stand in one paragraph
 The board works. hello_world, gpio_timer and can_logger have all been flashed,
@@ -1343,3 +1385,30 @@ PowerShell:
   constraint is STALE and was replaced — board, PCAN and rig are on the bench as
   of today. Anti-hallucination rule 3 (never claim a flash/test passed unless it
   was actually run this session) is unchanged and now matters more, not less.
+- 2026-08-31 (session 2): **REVERSED the "pin Zephyr at f80761e4940" decision**
+  on explicit user instruction — bumped to mainline HEAD `66e5135ffc3`. `west
+  update` clean; all 6 apps build; can_logger/gpio_timer byte-identical. This is
+  fine because both real bugs were fixed by local patches, not by the bump (the
+  bump alone fixes neither). CLAUDE.md's "do not bump Zephyr" hard constraint is
+  now stale — user overrode it.
+- 2026-08-31 (session 2): **USB-HS CDC-ACM bulk transfer FIXED.** Root cause was
+  NOT in Zephyr's usb subsys (which session-1 §3b checked) but in vendored FSP
+  `modules/hal/renesas/.../r_usb_device.c`: `process_pipe_xfer()` never commits a
+  bulk-IN zero-length packet (`BVAL` only re-asserted if already set). One-shot
+  ZLP from `usbd_cdc_acm_enable()` therefore never completes -> `CDC_ACM_TX_FIFO_BUSY`
+  stuck. Fix mirrors `pipe_xfer_in()`. `patches/0002-*`. Verified on hardware
+  (host reads HELLO frame, both directions). The J-Link-VCOM-only decision from
+  session 1 is lifted; USB CDC is a usable transport again.
+- 2026-08-31 (session 2): **OSPI-B `flash_renesas_ra_ospi_b.c` drives the wrong
+  chip-select on reset** (`RSTCS0` hardcoded; ek_ra8d1 NOR is on CS1). Real
+  defect, fixed (`patches/0001-*`), worth upstreaming. **But it is NOT why
+  `apps/flash_log` fails on our board** — bench probing shows the S28HL512T
+  answers `0xFF` to JEDEC ID / RDSR / CFR2V pre- and post-reset and after a
+  confirmed power cycle; the chip is electrically silent. Step 4 is blocked on a
+  hardware check (U3 population, OSPI config links), not on Zephyr.
+- 2026-08-31 (session 2): both upstream bugs are written up
+  (`docs/zephyr_usb_hs_bug.md` -> hal_renesas, `docs/zephyr_ospi_cs_reset_bug.md`
+  -> zephyr) but NOT filed — no `gh` CLI on this machine. User to file, or install gh.
+- 2026-08-31 (session 2): restored `C:\Python312\Lib` (+ `DLLs\*.pyd`) from the
+  identical 3.12.3 install under `%LOCALAPPDATA%\Programs\Python\Python312` — the
+  venv's base stdlib had been deleted, which was making every Zephyr build crawl.
