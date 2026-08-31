@@ -21,15 +21,19 @@ transceiver wires off P704/P705 (CAN/Ethernet are mutually exclusive). Step 4
    `f80761e4940` on user instruction, `west update` clean. All 6 apps rebuild
    OK; can_logger/gpio_timer are byte-identical to the old tree. To go back:
    `git -C zephyr checkout f80761e4940 && west update`.
-2. **USB-HS CDC-ACM bulk transfer is FIXED** — root cause was in **hal_renesas**
-   (FSP `r_usb_device.c`), NOT Zephyr's usb subsys: the bulk-IN ZLP was never
-   committed. Local patch `patches/0002-*`, hardware-verified (host reads the
-   HELLO frame; both directions work). `docs/zephyr_usb_hs_bug.md`. **The USB
-   CDC transport is viable again** — the J-Link VCOM fallback is no longer
-   forced. (usb_cdc still had our MAIN_STACK_SIZE fix from session 1.)
-3. **`patches/` holds two local fixes to west-managed trees.** Re-apply after any
-   `west update` — `patches/README.md`. Both also need filing upstream (no `gh`
-   on this box; drafts are the two `docs/zephyr_*_bug.md` files).
+2. **USB-HS CDC-ACM bulk transfer is FIXED** — the bulk-IN ZLP was never
+   committed in hal_renesas FSP `r_usb_device.c`. **Already fixed upstream** by
+   hal_renesas `f2c2aa6359e` (2026-08-04) — the very next commit after the
+   manifest's `f2eb9bc`. We independently found + diagnosed it (session 1-2),
+   then bumped `modules/hal/renesas` to `f2c2aa6359e` and dropped our local
+   patch. Hardware-verified. `docs/zephyr_usb_hs_bug.md`. **USB CDC transport is
+   viable again.** (usb_cdc also keeps the session-1 MAIN_STACK_SIZE fix.)
+3. **`patches/` holds ONE local fix** — `0001-*` (OSPI CS-reset), for `zephyr/`.
+   Re-apply after `west update`; also `git -C modules/hal/renesas checkout
+   f2c2aa6359e` to keep the USB fix. See `patches/README.md`.
+   **Upstream:** OSPI fix -> [zephyr#117908](https://github.com/zephyrproject-rtos/zephyr/pull/117908)
+   (OPEN, flagged code-review-only). USB fix PR (hal_renesas#220) closed as
+   duplicate of `f2c2aa6359e`.
 4. **Step 4 / OSPI flash: blocked on HARDWARE, not software.** The S28HL512T
    (U3) answers `0xFF` to every command — JEDEC ID, RDSR, CFR2V — before and
    after reset, warm boot and confirmed power cycle. Controller transacts fine
@@ -1406,9 +1410,16 @@ PowerShell:
   answers `0xFF` to JEDEC ID / RDSR / CFR2V pre- and post-reset and after a
   confirmed power cycle; the chip is electrically silent. Step 4 is blocked on a
   hardware check (U3 population, OSPI config links), not on Zephyr.
-- 2026-08-31 (session 2): both upstream bugs are written up
-  (`docs/zephyr_usb_hs_bug.md` -> hal_renesas, `docs/zephyr_ospi_cs_reset_bug.md`
-  -> zephyr) but NOT filed — no `gh` CLI on this machine. User to file, or install gh.
+- 2026-08-31 (session 2): both upstream bugs written up.
+- 2026-09-01 (session 2 cont.): installed `gh`, user auth'd, opened both PRs.
+  Then found the USB ZLP bug is **already fixed upstream** by hal_renesas
+  `f2c2aa6359e` (2026-08-04) -- literally the next commit after our pinned
+  `f2eb9bc`. Closed our hal_renesas#220 as a dup; bumped
+  `modules/hal/renesas` -> `f2c2aa6359e` (detached); removed `patches/0002`.
+  Our independent diagnosis was correct -- good validation. **OSPI CS-reset PR
+  [zephyr#117908](https://github.com/zephyrproject-rtos/zephyr/pull/117908)
+  stays OPEN** (zephyr main still has the RSTCS0 hardcode); PR body says
+  code-review-only since our board's flash is dead.
 - 2026-08-31 (session 2): restored `C:\Python312\Lib` (+ `DLLs\*.pyd`) from the
   identical 3.12.3 install under `%LOCALAPPDATA%\Programs\Python\Python312` — the
   venv's base stdlib had been deleted, which was making every Zephyr build crawl.

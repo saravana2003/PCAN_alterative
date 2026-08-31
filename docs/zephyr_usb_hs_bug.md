@@ -1,20 +1,25 @@
-# Zephyr bug report (draft): EK-RA8D1 USB-HS CDC-ACM bulk transfers never reach the host
+# EK-RA8D1 USB-HS CDC-ACM bulk transfers never reach the host — RESOLVED
 
-**Status:** root-caused and fixed locally 2026-08-31 (`patches/0002-usb-device-ra-send-zlp-on-bulk-in.patch`),
-hardware-verified. **Not yet reported upstream** — no `gh` CLI on the build box.
+**Status: FIXED UPSTREAM.** hal_renesas commit **`f2c2aa6359e`**
+("hal: renesas: ra: fix issue r_usb_device cannot send ZLP", 2026-08-04) is the
+immediate child of the west-manifest-pinned `f2eb9bc` and fixes exactly this.
+We hit it because our tree was pinned one commit too early.
 
-## Filing this upstream
+- This project independently found, root-caused and (locally) fixed the same
+  bug on 2026-08-31 before discovering the upstream commit — an unwitting but
+  clean confirmation of the diagnosis.
+- `modules/hal/renesas` is now checked out at `f2c2aa6359e`; the local patch is
+  removed. Re-verified on hardware after the bump (host reads the CDC data).
+- A PR we opened (`zephyrproject-rtos/hal_renesas#220`) was closed as a
+  duplicate of `f2c2aa6359e`.
 
-- Repo: **`zephyrproject-rtos/hal_renesas`** (the file is vendored FSP), with a
-  cross-reference issue in `zephyrproject-rtos/zephyr` since that is where users
-  hit it.
-- Title: *drivers: ra: r_usb_device: `process_pipe_xfer()` never commits a bulk-IN
-  zero-length packet — CDC-ACM TX wedges on ek_ra8d1*
-- One-line: the ZLP branch of `process_pipe_xfer()` only re-asserts `BVAL` when it
-  is already set, so a freshly-allocated empty buffer's ZLP is never transmitted,
-  no `BRDY` fires, `USBD_EVENT_XFER_COMPLETE` never comes, and
-  `usbd_cdc_acm`'s `CDC_ACM_TX_FIFO_BUSY` stays set forever.
-- The "ROOT CAUSE FOUND" section below is the issue body; the fix diff is the patch.
+The upstream fix sets `BVAL | BCLR` on the pipe FIFO unconditionally (plus a
+CURPIPE settle wait); functionally identical to what this write-up proposed
+(commit the empty buffer so the ZLP is actually transmitted).
+
+Original investigation below, kept for the record / the report.
+
+---
 
 Everything below was observed on real hardware in this project's Phase 5 bring-up.
 Nothing here is speculative; where a cause is unproven it is labelled as such.

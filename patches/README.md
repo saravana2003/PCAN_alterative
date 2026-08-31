@@ -7,63 +7,49 @@ lives here and must be re-applied after a `west update` (or a fresh
 
 ## Current tree
 
-- Zephyr: `66e5135ffc3` (mainline, checked out 2026-08-31 — see STATE.md)
-- hal_renesas: `f2eb9bc7352` (FSP 6.2.0)
+- Zephyr: `66e5135ffc3` (mainline, detached HEAD — see STATE.md)
+- hal_renesas: **`f2c2aa6359e`** (detached HEAD — bumped +1 from the manifest's
+  `f2eb9bc` to pick up the upstream USB ZLP fix, see below)
 
 ## Patches
 
 | file | tree | what it fixes |
 |---|---|---|
-| `0001-flash-renesas-ra-ospi-b-reset-correct-cs.patch` | `zephyr/` | OSPI-B driver only ever drives `RSTCS0`; a flash on CS1 (EK-RA8D1) is never reset. Real defect, worth upstreaming. **Does NOT fix our board's `flash_log` failure** — that's a hardware issue (silent flash). `docs/zephyr_ospi_cs_reset_bug.md` |
-| `0002-usb-device-ra-send-zlp-on-bulk-in.patch` | `modules/hal/renesas/` | RA USB device never commits a bulk-IN zero-length packet → CDC-ACM TX wedges forever. **Hardware-verified fix.** `docs/zephyr_usb_hs_bug.md` |
+| `0001-flash-renesas-ra-ospi-b-reset-correct-cs.patch` | `zephyr/` | OSPI-B driver only ever drives `RSTCS0`; a flash on CS1 (EK-RA8D1) is never reset. Real defect, submitted upstream (see below). **Does NOT fix our board's `flash_log` failure** — that's a hardware issue (silent flash). `docs/zephyr_ospi_cs_reset_bug.md` |
 
-## Apply
-
-```sh
-git -C zephyr apply ../patches/0001-flash-renesas-ra-ospi-b-reset-correct-cs.patch
-git -C modules/hal/renesas apply ../patches/0002-usb-device-ra-send-zlp-on-bulk-in.patch
-```
-
-Check whether they are already applied:
+### Apply / check
 
 ```sh
-git -C zephyr apply --reverse --check ../patches/0001-*.patch 2>/dev/null && echo "0001 applied"
-git -C modules/hal/renesas apply --reverse --check ../patches/0002-*.patch 2>/dev/null && echo "0002 applied"
+git -C zephyr apply "$PWD/patches/0001-flash-renesas-ra-ospi-b-reset-correct-cs.patch"
+git -C zephyr apply --reverse --check "$PWD/patches/0001-*.patch" && echo "already applied"
 ```
 
-Once merged upstream and pulled in, drop the corresponding patch.
+## USB-HS CDC-ACM ZLP fix — RESOLVED, no local patch
+
+The bulk-IN zero-length-packet bug (`docs/zephyr_usb_hs_bug.md`) is **fixed
+upstream** by hal_renesas commit `f2c2aa6359e`
+("hal: renesas: ra: fix issue r_usb_device cannot send ZLP", 2026-08-04) — the
+immediate child of the manifest-pinned `f2eb9bc`. We independently found and
+diagnosed the same bug; the local patch is gone and `modules/hal/renesas` is
+checked out at `f2c2aa6359e` instead. Verified on hardware after the bump.
+
+Restore after a fresh `west update` with:
+```sh
+git -C modules/hal/renesas fetch --depth 10 upstream main
+git -C modules/hal/renesas checkout f2c2aa6359e
+```
+Drop this step entirely once the Zephyr west manifest bumps hal_renesas past
+`f2c2aa6359e`.
 
 ## Upstream submission — `patches/upstream/`
 
-`git am`-ready commits (proper message + `Signed-off-by`), one per fix:
-
-| file | send to |
+| file | PR |
 |---|---|
-| `upstream/hal_renesas--usb-device-commit-bulk-in-zlp.patch` | `zephyrproject-rtos/hal_renesas` |
-| `upstream/zephyr--ospi-b-reset-correct-cs.patch` | `zephyrproject-rtos/zephyr` |
+| `upstream/zephyr--ospi-b-reset-correct-cs.patch` | **[zephyrproject-rtos/zephyr#117908](https://github.com/zephyrproject-rtos/zephyr/pull/117908)** — OPEN |
 
-**Before submitting**, fix the author/sign-off name — it was guessed from the
-git email as `Saravanakumar A`. Zephyr's DCO check wants your real name:
+The USB fix PR ([hal_renesas#220](https://github.com/zephyrproject-rtos/hal_renesas/pull/220))
+was **closed as a duplicate** of `f2c2aa6359e` once we found the upstream fix.
 
-```sh
-# edit the From: and Signed-off-by: lines in each .patch, OR after `git am`:
-git commit --amend --reset-author -s
-```
-
-To turn one into a PR (needs a GitHub fork + push access):
-
-```sh
-git clone git@github.com:<you>/hal_renesas   # your fork
-cd hal_renesas && git checkout -b fix/ra-usb-bulk-in-zlp
-git am /path/to/patches/upstream/hal_renesas--usb-device-commit-bulk-in-zlp.patch
-git push -u origin fix/ra-usb-bulk-in-zlp
-# then open the PR on github.com; base = zephyrproject-rtos/hal_renesas:main
-```
-
-Same for the Zephyr patch against a fork of `zephyrproject-rtos/zephyr`.
-The issue write-ups in `docs/zephyr_*_bug.md` are the text to paste into the
-PR description / a companion issue.
-
-**Honesty note for the OSPI PR:** functionally unverified — the OSPI NOR on our
-board sample is non-responsive (hardware), so we could only confirm the fix by
-code review. Say so in the PR.
+The OSPI PR is flagged in its description as **code-review only** — functionally
+unverified because our board's OSPI NOR is non-responsive (hardware). Full
+write-up: `docs/zephyr_ospi_cs_reset_bug.md`.
