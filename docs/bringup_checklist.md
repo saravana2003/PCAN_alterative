@@ -1,9 +1,18 @@
 # Hardware Bring-Up Checklist — EK-RA8D1
 
-**Status:** plan only. Nothing here has been executed. Every Phase 0–4 result to
-date is **build-only** — no image in this repo has ever run on silicon.
+**Status (updated 2026-08-31, first hardware session):**
 
-**Use this the day the board and PCAN arrive.** Work top to bottom. Do not start
+| step | app | result |
+|---|---|---|
+| 0 | `hello_world` | **PASS** — debug link, flash tool, serial console all good |
+| 1 | `gpio_timer` | **PASS** — LEDs, both buttons, timer measured at 100.26 ms/tick |
+| 2 | `can_logger` | **PASS** — CAN-FD proven both directions vs PCAN (FD/BRS deferred, see below) |
+| 3 | `usb_cdc` | **BLOCKED** — our bug fixed + USB enumerates, but bulk transfer is broken *inside Zephyr's RA USB-HS stack*. See `zephyr_usb_hs_bug.md`. Do not re-debug as an app bug. |
+| 4 | `flash_log` | **NEXT** |
+| 5 | `eth_doip` | not started |
+| 6 | MCUboot | not started (unblocked — step 2 passes) |
+
+Full detail for every result is in `STATE.md`. Work top to bottom. Do not start
 a step until the previous one either passes or its failure is fully understood
 and written down.
 
@@ -30,13 +39,22 @@ is progress; a failure you skipped past will cost you twice later.
 - [ ] **Commit or zip the current repo state as a clean baseline.** Everything
       up to here is build-verified; you want an unambiguous "before hardware"
       point to return to.
-- [ ] **Check wiring against the confirmed pin decisions — read the table, don't
+- [ ] **Check wiring against the CORRECTED pin decisions — read the table, don't
       trust memory:**
-      - transceiver **TX ← board pin P203** (CTX0)
-      - transceiver **RX → board pin P202** (CRX0)
+      - transceiver **TX ← board pin P704** (CTX0)
+      - transceiver **RX → board pin P705** (CRX0)
       - transceiver **STB tied to GND** (permanent normal mode; there is no MCU
         GPIO for it — the enable/standby overlay was cancelled in Phase 1)
-      - *(mapping confirmed against pin list 2329.pdf, Table 1.16)*
+
+      > **CORRECTED 2026-08-31 — the old P203/P202 instruction was WRONG.**
+      > R7FA8D1BHECBD is the MIPI package variant (datasheet Table 1.13,
+      > PLBG0224GD-A), so P202-P205 are permanently MIPI display signals, are
+      > not GPIO, and are not broken out on any header of this board. The
+      > earlier "confirmed against Table 1.16" check read the datasheet's
+      > "BGA224 without MIPI" column by mistake. P704/P705 is the Renesas FSP
+      > default and is what the breadboard is already wired to — **no rewiring
+      > is needed, this was a software-only fix.** Full reasoning: STATE.md,
+      > "CANFD0 pin decision".
 - [ ] **Check CAN bus termination.** Missing termination is the single most
       common cause of the error storms you'll otherwise chase in software.
 - [ ] **PCAN software installed and ready** on the laptop.
@@ -76,12 +94,23 @@ is progress; a failure you skipped past will cost you twice later.
 
 **App: `can_logger`, plain build — NOT the MCUboot/sysbuild one yet.**
 
-- [ ] Send a **standard-ID** frame in range from PCAN → board receives it.
-- [ ] Send an **extended-ID** frame → the catch-all filter gets it.
-- [ ] Send an **FD frame with the bit-rate switch (BRS) flag** → handled.
-- [ ] **Trigger a TX from the board** → PCAN sees it with the right ID, DLC,
-      and data.
-- [ ] **Watch PCAN's bus statistics for form / CRC / ACK errors.**
+- [x] Send a **standard-ID** frame in range from PCAN → board receives it.
+      (`id=0x00000123 dlc=8 flags=0x00`)
+- [x] Send an **extended-ID** frame → the catch-all filter gets it.
+      (`id=0x18daf110 dlc=8 flags=0x01` = `CAN_FRAME_IDE`, 29-bit ID intact)
+- [ ] ~~Send an **FD frame with BRS**~~ — **NOT POSSIBLE WITH THIS RIG.** The
+      bench analyser is a **PCAN-USB, classic CAN only**; it cannot generate or
+      decode CAN-FD. Needs a PCAN-USB **FD**. Deferred, not failed.
+- [x] **Trigger a TX from the board** → PCAN receives ID `0x123`, 8 bytes
+      `00..07`, on S3 reset.
+- [x] **Bus statistics clean** — BUSOK maintained, no form/CRC/ACK errors.
+
+> **Do not let the board transmit an FD frame onto a classic-only bus.** The
+> analyser emits error frames, the RA controller auto-retransmits, and
+> `CAN_MODE_ONE_SHOT` is not supported by this driver — so one frame becomes an
+> unbounded error storm (PCAN shows BUSHEAVY instantly). `can_logger`'s boot
+> frame is therefore classic, behind `#define BOOT_TX_USE_FD 0` in
+> `apps/can_logger/src/main.c`. Flip it to 1 when FD-capable gear arrives.
 
 > Form/CRC/ACK errors almost always mean **TX and RX are swapped, or a
 > termination resistor is missing** — a wiring fault, not a software bug. Go
@@ -89,23 +118,30 @@ is progress; a failure you skipped past will cost you twice later.
 
 ---
 
-## Step 3 — USB CDC-ACM
+## Step 3 — USB CDC-ACM — **BLOCKED UPSTREAM, DO NOT RE-DEBUG**
 
 **App: `usb_cdc`, on the USB-HS port.**
 
-- [ ] OS enumerates a serial device.
-- [ ] The port opens.
-- [ ] The **CLP self-test output** appears.
+- [x] OS enumerates a serial device. (`USB Serial Device (COMn)`,
+      `VID_2FE3&PID_0001`, High Speed)
+- [x] The port opens; DTR is detected by the device.
+- [x] The **CLP self-test passes** on hardware every boot.
+- [ ] **Data over the link — BROKEN IN ZEPHYR, NOT IN OUR CODE.** Bulk transfers
+      never reach the host. Proven with Zephyr's **own unmodified** `cdc_acm`
+      sample, and confirmed still unfixed in current mainline.
+      Full write-up + upstream repro: **`docs/zephyr_usb_hs_bug.md`**.
 
-> **Get this fully right before touching the GUI at all.** The GUI's entire job
-> is speaking CLP over this link — prove the link and the protocol here, or
-> you'll be debugging two unproven layers at once.
+> **The GUI is NOT blocked by this.** CLP is transport-agnostic — byte stream
+> in, byte stream out — so the project uses the **J-Link VCOM/UART** as the GUI
+> transport instead. Revisit USB if upstream fixes the RA UDC bulk path, or try
+> the Full-Speed (`usbfs`) route, which is a different UDC path and is not yet
+> tested.
 
 ---
 
-## Step 4 — Flash logging
+## Step 4 — Flash logging  ← **START HERE**
 
-**App: `flash_log`.**
+**App: `flash_log`.** Needs no USB and no CAN, so nothing above blocks it.
 
 - [ ] The littlefs mount succeeds on first boot.
 - [ ] The synthetic-frame test runs.
@@ -119,6 +155,14 @@ is progress; a failure you skipped past will cost you twice later.
 ## Step 5 — Ethernet / DoIP
 
 **App: `eth_doip`.**
+
+> **STOP — physically move the CAN wires first.** P704/P705 (CAN) are
+> bus-switch-routed to the Ethernet PHY on this board, so CAN and Ethernet are
+> not electrically safe to run at the same time regardless of firmware.
+> Disconnect the transceiver's two wires from P704/P705 before this step, and
+> reconnect them before going back to any CAN step. Project decision
+> (2026-08-31): CAN and Ethernet are **sequential use modes** — capture over
+> CAN, retrieve over Ethernet afterwards.
 
 - [ ] **SW1-5 is in the ETHB position** the code assumes.
 - [ ] `ping 192.168.1.50` from the laptop answers.

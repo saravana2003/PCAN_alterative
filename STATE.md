@@ -3,7 +3,385 @@
 Keep entries short. This file exists so a brand-new chat session can pick up
 exactly where the last one left off without re-reading old chat history.
 
+---
+
+## >>> START HERE (new session, read this box first) <<<
+
+**Project state as of 2026-08-31.** The board is real, on the bench, and
+working. Phase 5 hardware bring-up is underway.
+
+**Do this next:** bring-up **Step 4 — `apps/flash_log`**, including the
+**power-cycle persistence check**. Plan: `docs/bringup_checklist.md`
+(Step 4 is marked "START HERE" there). It needs no USB and no CAN, so nothing
+blocks it.
+
+**Five things that will otherwise waste your time:**
+
+1. **Flash failures on this board were a Renesas DLM lock, now fixed.** If
+   `west flash` ever fails weirdly again, read section 1 below BEFORE
+   investigating. It is not image size, not AV, not board damage — all were
+   tested and eliminated over several hours.
+2. **USB CDC-ACM is blocked by a bug in ZEPHYR, not in our code.** Proven with
+   Zephyr's own stock sample. Do not re-debug it as an application bug. Write-up
+   and upstream repro: `docs/zephyr_usb_hs_bug.md`. The GUI transport is the
+   **J-Link VCOM/UART** instead; CLP is transport-agnostic so nothing else
+   changes.
+3. **Zephyr must stay at commit `f80761e4940`** (detached HEAD, deliberate).
+   Every hardware result we have was validated on it. `git -C zephyr checkout
+   main` goes forward to `66e5135ffc3` if ever needed; going forward does NOT
+   fix the USB bug (verified — see section 3b).
+4. **CAN and Ethernet cannot run at the same time** on this board (P704/P705 are
+   bus-switch-routed to the Ethernet PHY). Before Step 5, physically move the
+   CAN transceiver's two wires off P704/P705. Sequential-use decision below.
+5. **The bench PCAN-USB is classic-CAN only**, so CAN-FD/BRS cannot be
+   validated with current equipment. Do not write the Phase 6 report as if FD
+   were tested.
+
+**Build/flash quick reference** (full notes in section 4 and "Build commands"):
+```
+.venv\Scripts\west build -b ek_ra8d1 apps/<app> -d build/<app> [-p always]
+.venv\Scripts\west flash -d build/<app>          # J-Link, board is attached
+```
+Console = **COM12** (J-Link VCOM, 115200). Capture helpers live in the session
+scratchpad (`capreset.py`, `capboot.py`) — they are ~20 lines of pyserial, and
+section 4 explains why the reader must be attached BEFORE the board resets.
+
+---
+
 ## Current Phase
+Phase 5 — HARDWARE BRING-UP. **First real hardware session: 2026-08-31.**
+Board, PCAN unit and rig are physically on the bench. Everything before today
+was build-only; CLAUDE.md's old "board not available" constraint is gone.
+
+STATUS: Steps 0, 1 and 2 of docs/bringup_checklist.md **PASS**.
+Step 3 (usb_cdc) is **PARTIAL**: our stack-overflow bug is FIXED and USB
+enumeration WORKS, but bulk data transfer is broken inside Zephyr's RA USB-HS
+stack — proven with Zephyr's own stock sample, so it is not our code.
+Steps 4-6 untouched.
+
+### Where things stand in one paragraph
+The board works. hello_world, gpio_timer and can_logger have all been flashed,
+booted and exercised on real silicon. GPIO/LEDs/buttons/timer are validated,
+and the CAN-FD driver is proven bidirectionally against a real PCAN analyser
+on the corrected P704/P705 pins. Two significant things were discovered today:
+the board shipped in a locked Renesas DLM state that made most of the flash
+unprogrammable (fixed), and the bench analyser is classic-CAN-only, so CAN-FD
+with BRS cannot be validated with current equipment (deferred, not broken).
+
+---
+
+## 1. ROOT CAUSE OF THE DAY'S FLASH FAILURES: RENESAS DLM STATE (FIXED)
+**READ THIS BEFORE RE-DIAGNOSING ANY FLASH FAILURE ON THIS BOARD.**
+
+SYMPTOM: `west flash` succeeded for hello_world (27352 B) but failed every time
+for gpio_timer (38012 B) and can_logger (45436 B). J-Link reported only
+"Timeout while calculating CRC, RAMCode did not respond in time!" then "Failed
+to erase sectors". pyocd localised it precisely: `flash erase sector failure
+(address 0x02008000)`. A sector map showed everything below 0x02008000 erasing
+fine and **everything at or above it failing** — only the first 32 KiB of the
+2 MB code flash was usable. Chip erase failed too.
+
+ACTUAL CAUSE: the device was in Renesas **Device Lifecycle Management state
+OEM_PL2, Authentication Level AL2** — almost certainly left from Renesas's
+factory secure-provisioning flow on this board sample. In that state code flash
+above the first 32 KiB refuses to erase, and **nothing in the J-Link or pyocd
+output ever mentions protection or lifecycle state.**
+
+FIX: **Renesas Flash Programmer (RFP) -> "Initialize Device"** (run by the
+user). Completed cleanly. Immediately afterwards the SAME command with the SAME
+unchanged artifact — `west flash -d build/gpio_timer` — returned EXIT 0 and the
+app booted. gpio_timer went 0/4 -> 1/1 with zero changes to code, config or
+tooling. can_logger (45436 B) then flashed cleanly too, re-confirming the fix.
+
+IT WAS **NOT** ANY OF THESE — all tested and eliminated, do not resurrect:
+- NOT image size or duration. The 27 KB-passes / 38 KB-fails pattern was a
+  COINCIDENCE of where the 32 KiB boundary fell. Very convincing, entirely
+  wrong.
+- NOT AV / Windows Defender. Tested directly with exclusions on JLink.exe, the
+  SEGGER folder and the project tree; failed identically. (Exclusions were
+  added elevated and should be REMOVED if that was never done.)
+- NOT board damage or bad silicon. We came close to declaring a defect and
+  starting an RMA. The flash was fine all along.
+- NOT SWD speed, probe contention, board state, OFS/option-memory contents, or
+  block protection. BPS/PBPS/BPS_SEL all read FFFFFFFF from the live device —
+  genuinely unprotected, because the lock was in the DLM state, which is
+  invisible to both J-Link and pyocd.
+
+LESSON: neither J-Link nor pyocd can see or report DLM / Authentication Level.
+If flash erase fails on an RA part in a way that makes no sense, reach for the
+VENDOR tool (RFP) EARLY to read the lifecycle state. Hours went into bisecting
+image sizes and AV settings that no amount of J-Link/pyocd work could ever have
+resolved.
+
+---
+
+## 2. BRING-UP RESULTS (docs/bringup_checklist.md)
+
+### Step 0 — Debug link: **PASS**
+- Probe: on-board SEGGER J-Link OB (JLink_V948), enumerates as "JLink CDC UART
+  Port (COM12)". Console = uart9 (SCI9) @ 115200, board default.
+- `west flash -d build/hello_world` -> EXIT 0; J-Link IDs the part correctly
+  ("Cortex-M85 identified", I-/D-Cache L1 16 KB each).
+- Console: `*** Booting Zephyr OS build f80761e49401 ***` /
+  `Hello World! ek_ra8d1/r7fa8d1bhecbd`. Build hash matches our checkout.
+
+### Step 1 — GPIO / LEDs / buttons / timer (apps/gpio_timer): **PASS**
+Zero code changes were needed.
+- [x] Idle LED = GREEN, user-confirmed visually. Matches io_control.c's led2
+      (P40E). Silkscreen and code AGREE; the Phase 2B / Table 22 mapping is now
+      hardware-confirmed.
+- [x] S1 (P009) -> red (led3/P107) blinking @250 ms. Confirms P009 ->
+      port_irq13 -> NVIC 89.
+- [x] S2 (P008) -> solid green. Confirms P008 -> port_irq12 -> NVIC 88.
+- [x] No double-triggers: 240 s capture over 8 press-pairs gave exactly 8
+      "capture START" and 8 "capture STOP", STRICTLY ALTERNATING. Shortest
+      STOP->START gap 855 ms, far outside the 40 ms debounce window.
+      HONEST CAVEAT: this proves correct BEHAVIOUR, not that the debounce code
+      was stressed. set_state() early-returns when the requested state equals
+      the current one, so a same-button bounce is silently absorbed and never
+      logged. Exercising DEBOUNCE_MS would need instrumentation in
+      button_isr(). Not worth doing unless bouncing is actually observed.
+- [x] Timer accuracy MEASURED over a long run: 299 ticks across 29.979 s =
+      **100.26 ms/tick against a 100 ms target, no drift**. Shorter runs agree
+      (68/6.846 s, 33/3.310 s, 30/3.050 s). The "Timer" report deliverable is
+      now a measured number, not a compiled promise.
+
+### Step 2 — CAN-FD (apps/can_logger, plain build): **PASS, both directions**
+- Boot line on silicon: `canfd0 started: CAN-FD, core clock 80000000 Hz,
+  RX IRQ 45 (NVIC)`. Proves canfd0 bound, CAN_MODE_FD accepted, all 3 RX
+  filters registered, can_start() OK, RX ISR on NVIC IRQ 45.
+- **PCAN -> board (RX): PASS.** 10 frames, zero errors, zero drops:
+    - `id=0x00000123 dlc=8 flags=0x00` — 11-bit classic. Matched targeted
+      filter [0] (id=0x100 mask=0x700, covering 0x100..0x1FF).
+    - `id=0x18daf110 dlc=8 flags=0x01` — flags 0x01 = CAN_FRAME_IDE
+      (can.h:147). The 29-bit ID arrived INTACT (not truncated to 11 bits) and
+      was correctly flagged extended. Matched catch-all filter [2].
+- **Board -> PCAN (TX): PASS.** On S3 reset the analyser receives the boot
+  frame ID 0x123, 8 bytes 00..07, decoded correctly.
+- **Bus health: PASS.** BUSOK maintained; no form/CRC/ACK error storm, no
+  bus-off. The board ACKed every frame — impossible if TX/RX were swapped or
+  termination were missing, so both of those classic wiring faults are ruled
+  out by evidence.
+- Software RX timestamps validated: ts=1971050 ticks @10 kHz = 197.1 s,
+  matching the console's own [00:03:17] stamp. The k_uptime_ticks() fallback
+  (needed because the RA driver has no CONFIG_CAN_RX_TIMESTAMP) works in ISR
+  context.
+- **The RX interrupt path is proven end-to-end on silicon**: NVIC IRQ 45 ->
+  canfd_common_fifo_rx_isr -> can_iface_rx_isr -> on_can_rx. Together with the
+  Step 1 button IRQs, the "Interrupt + NVIC" report deliverable now has TWO
+  hardware-verified data points.
+- **THE P704/P705 PIN CORRECTION IS VALIDATED BY REAL TRAFFIC.** Frames
+  physically flowed on CTX0=P704 / CRX0=P705. Today's retraction of the
+  P202/P203 decision is confirmed by working hardware, not just by datasheet
+  reasoning. Full reasoning: the "CANFD0 pin decision" section below.
+
+### Step 3 — USB CDC-ACM (apps/usb_cdc): **PARTIAL — two bugs found. Bug 1 was
+### ours and is FIXED. Bug 2 is IN ZEPHYR'S RA USB STACK and blocks Step 3.**
+
+#### Bug 1 (OURS, FIXED): main-thread stack overflow
+- SYMPTOM: boot reached "USB CDC-ACM up", then ~49 ms later:
+      <err> os: ***** USAGE FAULT *****
+      <err> os:   Illegal load of EXC_RETURN into PC
+      <err> os: Faulting instruction address (r15/pc): 0x22003400
+      <err> os: >>> ZEPHYR FATAL ERROR 34 ... Halting system
+- CAUSE: `CONFIG_MAIN_STACK_SIZE` was never set in apps/usb_cdc/prj.conf, so it
+  defaulted to **1024**. clp_selftest() puts a struct clp_parser (87-byte frame
+  buffer + cobs_decoder), a struct clp_can_frame (64 data bytes) and
+  uint8_t wire[CLP_MAX_WIRE] on that stack, then calls clp_encode_raw() which
+  NESTS another 87-byte logical[] plus a cobs_encoder.
+- EVIDENCE IT WAS THE STACK: faulting PC was in SRAM with no symbol (checked
+  with arm-zephyr-eabi-nm); LR resolved (addr2line) to cobs_sink_cb,
+  clp_proto.c:54; and the dumped FP registers contained the SELF-TEST'S OWN
+  DATA (s[8..15] = a7a4a500 a3a0a1a6 ... = in.data[i]=i^0xA5; s[6]/s[7] =
+  55667700/11223344 = the test timestamp 0x0011223344556677).
+- FIX: `CONFIG_MAIN_STACK_SIZE=4096` added to apps/usb_cdc/prj.conf, with a
+  comment recording the fault. Crash GONE, boot now clean. (Phase 2D's
+  flash_log already set this explicitly; usb_cdc was simply missed.)
+
+#### USB enumeration: **WORKS**
+      Name     : USB Serial Device (COM13)
+      DeviceID : USB\VID_2FE3&PID_0001&MI_00\7&78F25EB&0&0000
+- VID 0x2FE3 / PID 0x0001 are the Zephyr test IDs recorded as PLACEHOLDERS in
+  Phase 2C, so this is unambiguously our device. Windows' inbox usbser.sys
+  binds it; no driver install needed.
+- Device-side log confirms a correct High-Speed enumeration:
+      <inf> usbd_init:    bNumInterfaces 2 wTotalLength 75
+      <inf> usbd_core:    Actual device speed 2      (= High Speed)
+      <inf> usbd_cdc_acm: Configuration enabled
+- The USB **Full-Speed** port stays silent, which is CORRECT and expected:
+  usbfs is not enabled in the stock ek_ra8d1 DTS (Phase 1 finding); this app
+  deliberately targets USB-HS.
+
+#### Bug 2 (NOT OURS — ZEPHYR RA USB-HS STACK): bulk data never reaches the host
+- SYMPTOM: DTR is detected, HELLO is generated and handed to the CDC-ACM
+  driver, and the driver ACCEPTS it — but ZERO bytes ever arrive at the host:
+      <inf> usb_link: host connected (DTR) - sending HELLO
+      <inf> usbd_cdc_acm: tx_en: trigger irq_cb_work
+      <inf> usbd_cdc_acm: UART dev 0x200ed08, len 33, remaining space 991
+      (second HELLO -> "remaining space 958")
+  The driver's own TX FIFO free space goes 1024 -> 991 -> 958: our bytes are
+  accumulating INSIDE the class driver and are never forwarded to the USB IN
+  endpoint. Host read 0 bytes over repeated 5-6 s windows.
+- OUR CODE IS DOING ITS JOB: tx_push() -> uart_irq_tx_enable() -> our cdc_isr
+  -> uart_fifo_fill() all execute, and the driver's own log line confirms it
+  accepted 33 bytes. The break is BELOW our application code.
+- **PROVEN NOT OURS by running Zephyr's OWN STOCK SAMPLE.** Built and flashed
+  unmodified `zephyr/samples/subsys/usb/cdc_acm` (cdc_acm_echo, which echoes
+  whatever it receives) on this board. Result: it enumerates, its CONTROL
+  transfers work —
+      <inf> cdc_acm_echo: USBD message: CDC ACM line coding
+      <inf> cdc_acm_echo: Baudrate 115200
+      <inf> cdc_acm_echo: USBD message: CDC ACM control line state
+  — but writing 17 bytes to it produced **0 bytes echoed back**. The stock
+  sample fails exactly like ours.
+  => The fault is in Zephyr's RA USB device stack (udc_renesas_ra /
+     usbd_cdc_acm) for USB-HS on this board at mainline v4.4.99 (f80761e).
+     apps/usb_cdc and the CLP layer are EXONERATED.
+  **FULL WRITE-UP + UPSTREAM-READY REPRO: `docs/zephyr_usb_hs_bug.md`.**
+  That file is prepared material for a zephyrproject-rtos/zephyr issue; it
+  has not been reported upstream yet.
+- CONTROL transfers work; BULK data transfer does not. That is the precise
+  shape of the bug for anyone searching upstream issues.
+- **SCOPE: does NOT touch the CLP protocol or the GUI contract.** The CLP
+  self-test passes on hardware every boot (correct 89-byte wire length for an
+  FD-64 frame, round-trip OK, resync OK, corrupted frame counted):
+      <inf> main: selftest PASS (crc_err=1 framing_err=0 frames_ok=2)
+  docs/clp_protocol.md needs no change. What is unproven is the TRANSPORT, not
+  the protocol.
+- INVESTIGATION DEAD END WORTH RECORDING: I tried to narrow this via the class
+  driver's LOG_DBG lines (CONFIG_USBD_CDC_ACM_LOG_LEVEL_DBG=y, confirmed
+  CONFIG_USBD_CDC_ACM_LOG_LEVEL=4 in .config) — but NO DBG output ever appeared,
+  not even from paths known to execute. So "no DBG line" could NOT be used as
+  evidence, and an earlier conclusion built on that (CDC_ACM_TX_FIFO_BUSY being
+  stuck) is UNPROVEN — do not treat it as fact. The stock-sample comparison is
+  what actually settled the question. Those temporary log-level edits have been
+  REVERTED; only CONFIG_MAIN_STACK_SIZE=4096 remains.
+- NEXT OPTIONS for Step 3 (none attempted, need a decision):
+  1. Search/raise a Zephyr upstream issue for RA (RA8D1) USB-HS bulk transfer.
+     Have a precise repro: stock cdc_acm sample, ek_ra8d1, no echo.
+  2. Try a different Zephyr revision — mainline v4.4.99 was pinned on
+     2026-08-29 for Cortex-M85 support; a newer or tagged release may have RA
+     UDC fixes. Weigh against the "mainline can break between pulls" risk
+     already logged in the decisions log.
+  3. Try USB **Full-Speed** instead (usbfs), which would need enabling in an
+     overlay — a DIFFERENT UDC path, so it may sidestep the HS bug.
+  4. Fall back to the J-Link VCOM/UART as the GUI transport for now. CLP is
+     transport-agnostic (byte stream in, byte stream out), so the GUI work is
+     NOT blocked by this — only the USB transport is.
+
+---
+
+## 3. TEST-EQUIPMENT LIMITATION — AFFECTS PROJECT SCOPE
+**The bench analyser is a PCAN-USB, which is CLASSIC CAN ONLY.** It cannot
+decode CAN-FD. The giveaway is PCAN-View's status bar: "Bit rate: 500 kbit/s"
+with no data bitrate field.
+- **CAN-FD with BRS — the project's headline capability — CANNOT BE VALIDATED
+  on this rig.** This is an EQUIPMENT GAP, not a firmware defect. It needs a
+  PCAN-USB **FD** or equivalent FD-capable analyser. Do not write the Phase 6
+  report as though FD were validated.
+- SYMPTOM IT CAUSED: PCAN-View showed **BUSHEAVY immediately on connect**,
+  before any manual frame was sent. Chain, all verified in-tree:
+    1. can_logger's main() sent one boot frame with CAN_FRAME_FDF|CAN_FRAME_BRS.
+    2. The classic-only analyser cannot decode FD -> emits error frames.
+    3. The RA controller AUTO-RETRANSMITS (retry on lost arbitration / missing
+       ACK is the CAN default, zephyr/include/zephyr/drivers/can.h:1316).
+    4. That retry CANNOT be disabled here: CAN_MODE_ONE_SHOT exists
+       (can.h:104, BIT(3)) but can_renesas_ra_get_capabilities()
+       (drivers/can/can_renesas_ra.c:413) advertises only
+       NORMAL|LOOPBACK|FD|MANUAL_RECOVERY, and can_set_mode() rejects any bit
+       outside the capability mask.
+    => a SINGLE can_send() becomes an unbounded error storm, not a one-time
+       error a status reset would clear.
+- FIX APPLIED (apps/can_logger/src/main.c): the boot self-transmit is now a
+  CLASSIC frame (flags = 0), guarded by a new `#define BOOT_TX_USE_FD 0`.
+  Classic frames remain valid from an FD controller in FD mode, so the
+  board->analyser TX test stayed possible. **Set BOOT_TX_USE_FD to 1 the moment
+  FD-capable gear is available** — FD/BRS is a real project requirement.
+- DESIGN CONSEQUENCE TO REMEMBER: no CAN_MODE_ONE_SHOT on this driver is
+  permanent. Any TX onto a bus that might not ACK (wrong bitrate, no peer,
+  incompatible node) produces a sustained storm rather than one clean failure.
+
+---
+
+## 3b. ZEPHYR VERSION: PULLED BY ACCIDENT, ROLLED BACK. USB BUG IS UPSTREAM TOO.
+On 2026-08-31 the zephyr repo was accidentally `git pull`ed, moving it 150
+commits from our validated snapshot. It has been ROLLED BACK. Details:
+- **VALIDATED COMMIT (the one to be on): `f80761e4940`** — "net: shell: fix
+  -Wuninitialized-const-pointer warnings". Independently corroborated: it is
+  the `f80761e49401` build hash printed in EVERY boot banner in today's
+  hardware results.
+- The accidental pull landed on `66e5135ffc3`. Recovered from `git reflog`
+  (HEAD@{1} = the original clone point).
+- CURRENT STATE: zephyr is at `f80761e4940` on a **DETACHED HEAD**, tree clean.
+  This is deliberate, so nothing is lost in either direction:
+      go forward to the pulled state:  git -C zephyr checkout main   (66e5135ffc3)
+      return to the validated state:   git -C zephyr checkout f80761e4940
+- `west update` was NOT run and modules were NOT touched. hal_renesas is pinned
+  to the SAME revision (f2eb9bc) in both manifests, so the workspace is
+  consistent as-is.
+
+### KEY FINDING: upstream has NOT fixed the RA USB-HS bug
+Before rolling back, the 150 new commits were checked for anything that could
+matter. NOTHING relevant changed:
+      drivers/usb/udc/udc_renesas_ra.c                  0 commits
+      subsys/usb/device_next/class/usbd_cdc_acm.c       0 commits
+      all of subsys/usb/ + drivers/usb/                 0 commits
+      soc/renesas, boards/renesas/ek_ra8d1,
+        dts/arm/renesas, drivers/can/can_renesas_ra.c   0 commits
+`git diff --name-only f80761e4940..HEAD` matched ZERO files containing
+"renesas" or "ra8". The USB code is byte-identical between the two revisions.
+=> Updating Zephyr CANNOT fix the Step 3 USB-HS bulk-transfer bug, and the bug
+   is present in current mainline, not just our pinned snapshot. Do not try
+   "just update Zephyr" again for this problem without first re-running that
+   same `git log <range> -- drivers/usb/ subsys/usb/` check.
+=> Rolling back also avoided 150 commits of mainline churn against CAN/GPIO/
+   flash results that had just been validated on hardware (the "mainline can
+   break between pulls" risk already in the decisions log).
+
+### Post-rollback verification (2026-08-31)
+All four apps rebuilt PRISTINE (`-p always`) against the restored tree, all
+exit 0, and three of four match their originally-recorded Phase 2 sizes
+EXACTLY — strong evidence the rollback restored the validated tree:
+      can_logger  45428 B  (2.20%)  = 45436 - 8 B, explained by our
+                                      classic-boot-frame change (BOOT_TX_USE_FD 0)
+      gpio_timer  38012 B  (1.84%)  identical to Phase 2B record
+      usb_cdc     70924 B  (3.44%)  identical to Phase 2C record
+                                    (MAIN_STACK_SIZE is RAM, not FLASH)
+      flash_log   72500 B  (3.51%)  identical to Phase 2D record
+
+### DECISION: stay on f80761e4940; use the J-Link VCOM/UART as the GUI transport
+CLP is transport-agnostic (byte stream in, byte stream out) and its self-test
+passes on hardware every boot, so GUI work is NOT blocked — only the USB
+transport is. Revisit USB when upstream fixes the RA UDC bulk path, or try the
+Full-Speed (usbfs) path, which is a different UDC route.
+
+---
+
+## 4. TOOLING NOTES LEARNED TODAY (save the next session hours)
+- **Serial console capture**: apps print their banner ONCE at boot, so the
+  reader must ALREADY be attached when the board resets. Flashing first and
+  opening the port afterwards captures nothing and looks exactly like a dead
+  console — it is not. Helpers written this session live in the scratchpad:
+  `capreset.py` (open COM12 -> J-Link reset -> capture) and `capboot.py <secs>`
+  (plain long capture). Re-create them if the scratchpad is gone; they are ~20
+  lines of pyserial.
+- **Never pipe `west flash` through grep and read `$?`** — you get grep's exit
+  status and will misreport a failure as success. Redirect to a file instead.
+- **One J-Link session at a time.** A capture script holding its own JLink
+  session collides with `west flash` and produces a confusing FATAL ERROR.
+- **`west flash -r pyocd` needs .venv/Scripts on PATH** ("required program
+  pyocd not found" otherwise) — west does not find its own venv's scripts.
+- **pyocd needed a CMSIS pack**: R7FA8D1BH is not in the built-in target list.
+  `pyocd pack install R7FA8D1BH` (Renesas.RA_DFP 6.5.1) fixed it; target is now
+  `r7fa8d1bh`. Worth keeping — pyocd's precise error messages are far better
+  than J-Link's and are what localised the flash boundary today.
+- **pyocd always prints a harmless SVD-parser traceback** ending in
+  "AttributeError". A grep for /error/i therefore matches EVERY run and reports
+  100% failure, INCLUDING sectors that erased fine. This produced a completely
+  false sector map before it was caught. Judge pyocd by EXIT CODE, or grep the
+  specific string "flash erase.*failure".
+
+## Previous phase
 Phase 4 — TrustZone feasibility spike COMPLETE 2026-08-30 (research only, no
 driver code written). VERDICT: NO-GO on TrustZone — now a locked decision in
 CLAUDE.md's hard constraints, not an open question. Do not revisit unless the
@@ -485,7 +863,64 @@ Build: west build -b ek_ra8d1 apps/can_logger -d build/can_logger -p always
  All can_iface_* symbols linked into zephyr.elf. NOT flashed (no board).
 Did NOT touch Ethernet / USB / flash storage (per phase scope).
 
-## CANFD0 pin decision (2026-08-29) — FINAL: CTX0=P203, CRX0=P202
+## CANFD0 pin decision — CURRENT: CTX0=P704, CRX0=P705 (2026-08-31)
+### >>> RETRACTION of the 2026-08-29 "FINAL: CTX0=P203, CRX0=P202" decision <<<
+The original entry is preserved verbatim below on purpose. It is WRONG, and
+seeing both what was believed and why it failed is the point — this is the
+anti-hallucination process working, catching a bad "confirmed" fact before it
+cost bench time.
+
+WHY IT WAS WRONG (CONFIRMED FACT, do not re-litigate):
+- The RA8D1 datasheet's pin-function table has TWO BGA224 columns: "BGA224"
+  and "BGA224 without MIPI". P202/P203/P204/P205 appear as GPIO only in the
+  *without MIPI* column. The 2026-08-30 "user confirmed against pin list
+  Table 1.16" check read the wrong column.
+- Datasheet Table 1.13 (Product List) confirms our exact part R7FA8D1BHECBD,
+  package PLBG0224GD-A, IS the MIPI variant. On this silicon P202-P205 are
+  permanently committed to MIPI_CL_P/N and MIPI_DL0_P/N display signals. They
+  are not GPIO and not CANFD-capable.
+- Physically confirmed on the board too: NO header on the EK-RA8D1 breaks out
+  P202/P203 at all. There was never anything to wire to.
+- Root cause worth remembering: Zephyr's RA pinctrl does not validate PSEL
+  capability at build time, so the wrong pins built perfectly cleanly for
+  three phases. A clean build is not pin validation.
+
+THE FIX (2026-08-31, software only — physical wiring unchanged):
+- CTX0 = P704, CRX0 = P705 (the original Renesas FSP default). The breadboard
+  transceiver was already wired to these pins; nothing on the bench moved.
+- Reverted in BOTH overlays: boards/ek_ra8d1.overlay and
+  apps/can_logger/boards/ek_ra8d1.overlay.
+- RA_PSEL encoding re-verified from source, not memory
+  (zephyr/include/zephyr/dt-bindings/pinctrl/renesas/pinctrl-ra.h:61,66,117,
+  123,144): RA_PSEL(psel,port,pin) = 1<<13 | psel<<8 | pin<<4 | port<<0, with
+  RA_PSEL_CANFD = 0x10. Therefore P704 = 0x3047, P705 = 0x3057.
+  (Cross-check that the encoding rule is right: it reproduces the OLD values
+  too — P202 = 0x3022, P203 = 0x3032, exactly what the old build recorded.)
+
+## CAN + Ethernet are MUTUALLY EXCLUSIVE on this board (DECISION 2026-08-31)
+P704/P705 are not merely a devicetree pinctrl choice that happens to collide
+with RMII0_RX_ER_B / RMII0_CRS_DV_B in ether_default. On the EK-RA8D1 they are
+physically BUS-SWITCH-ROUTED to the Ethernet PHY. So CAN-FD and on-chip
+Ethernet are NOT electrically safe to run at the same time on this board,
+regardless of which firmware is flashed.
+
+DECISION: downgrade "CAN + Ethernet concurrent" from a hard requirement to
+SEQUENTIAL USE MODES — capture over CAN, retrieve the logs over Ethernet
+afterwards. This matches real product use, costs no capability, and removes
+only exact simultaneity.
+
+BENCH CONSEQUENCE (for the user, every time modes are switched): physically
+disconnect the CAN transceiver's 2 wires from P704/P705 before testing
+Ethernet, and reconnect them before testing CAN. This holds until a real board
+SCHEMATIC (not just the MCU datasheet) turns up a routing that avoids it —
+that search is FUTURE WORK, not a blocker for bring-up.
+
+NOTE this also invalidates the original rationale for moving off the stock
+P401/P402 pins: that reasoning ("we run CAN + Ethernet + OSPI concurrently")
+assumed concurrency that this board cannot provide anyway.
+
+### ----- ORIGINAL ENTRY, SUPERSEDED / RETRACTED — kept for the record -----
+## CANFD0 pin decision (2026-08-29) — FINAL: CTX0=P203, CRX0=P202  [RETRACTED]
 Overlay: D:\BITS_ASSIGNMENTS\ESD\SITUATIONAL_LEARNING\boards\ek_ra8d1.overlay
 (remaps &pinctrl/canfd0_default group1 to RA_PSEL(CANFD,2,2)=P202 CRX0,
 RA_PSEL(CANFD,2,3)=P203 CTX0). Apply to any build with:
@@ -642,44 +1077,43 @@ ek_ra8d1-pinctrl.dtsi.
   wants the Full-Speed port, our overlay must set &usbfs status = "okay".
 
 ## Next Steps (the next session should start here)
-0. TOMORROW (2026-08-31) IS HARDWARE BRING-UP. Board + PCAN arrive. Work
-   through docs/bringup_checklist.md top to bottom. Core rule: flash ONE
-   isolated Phase-2 app at a time, never a combined image (none exists), and
-   do not advance a step until the current one passes or its failure is fully
-   understood and logged. Order: 0 hello_world (debug link) -> 1 gpio_timer ->
-   2 can_logger plain -> 3 usb_cdc -> 4 flash_log (incl. power-cycle
-   persistence) -> 5 eth_doip -> 6 MCUboot (only after step 2 passes).
-   NO new Phase 2/3 feature code until bring-up has run.
-   Log every result, pass or fail, into STATE.md at the end of the day.
-1. Phase 4 decisions are now CLOSED — both were made by the user 2026-08-30 and
-   written into CLAUDE.md's hard constraints:
-   (a) TrustZone = NO-GO, do not revisit unless the user explicitly asks.
-   (b) RSIP-E51A wrapped-key AES-128 CMAC is the chosen security mechanism for
-       a future SecOC-style phase. Locked-in direction, NOT a green light to
-       start coding — wait for an explicit go-ahead.
-   Still open, low priority: the "256-bit HUK" figure is unverified (Renesas'
-   public page says 128-bit unique ID). Resolve against the RA8D1 User's
-   Manual: Hardware security chapter before citing it in the Phase 6 report.
-   Housekeeping: build/tz_spike and build/tz_spike2 are throwaway spike dirs and
-   can be deleted.
-2. Phase 3 is DONE (see Phase 3 summary + MCUboot->SecOC note above).
-   Follow-ups if we revisit MCUboot:
-   - generate a real ECDSA-P256 project key, set SB_CONFIG_BOOT_SIGNATURE_KEY_FILE
-     (currently on the module debug key).
-   - decide whether the other Phase 2 apps (gpio_timer, usb_cdc, flash_log,
-     eth_doip) also need the sysbuild wiring, or whether we integrate first
-     and MCUboot-wrap only the integrated image.
-   - swap-mode rollback is blocked by flash0's 128-byte write alignment;
-     revisit only if we move slots to the OSPI NOR.
-3. DONE 2026-08-30 (was: run the Phase 4 TrustZone spike). See the Phase 4
-   summary above and docs/trustzone_feasibility.md.
-4. DONE 2026-08-30 (was: confirm P202/P203 = CANFD0, and the LED colour map).
-   Both confirmed by the user — CANFD0 pins against pin list 2329.pdf
-   Table 1.16, LED colours against the EK-RA8D1 User's Manual Table 22.
-   Neither needed a code change. See Blocked / Open Questions.
-5. Remaining genuinely-open items are now only: SDRAM population on this board
-   revision, and the usbfs-vs-usbhs note. Both in Blocked / Open Questions;
-   both answerable tomorrow with the board in hand.
+0. READ FIRST: the "Current Phase" section at the top has the full 2026-08-31
+   hardware bring-up record — DLM root cause, Steps 0/1/2 results, the
+   classic-only-analyser limitation, and tooling gotchas. Do not re-diagnose
+   any of it.
+1. STEP 3 (usb_cdc) IS DONE AS FAR AS IT CAN GO. Our stack-overflow bug is
+   fixed and USB ENUMERATION WORKS; bulk data transfer is broken inside
+   Zephyr's RA USB-HS stack, proven with Zephyr's own stock cdc_acm sample and
+   confirmed unfixed in current mainline (see sections 3 and 3b). DO NOT
+   re-debug this as an application bug.
+   RESUME AT **Step 4 (flash_log)**, including the power-cycle persistence
+   check — that is the next genuinely untested thing and needs no USB.
+   Then Step 5 (eth_doip) and Step 6 (MCUboot; Step 2 passes, so it is
+   unblocked).
+   For the GUI link meanwhile, use the J-Link VCOM/UART transport (decision in
+   section 3b); CLP is transport-agnostic so no protocol change is needed.
+2. BEFORE STEP 5 (Ethernet), physically MOVE THE CAN TRANSCEIVER WIRES off
+   P704/P705. CAN and Ethernet are mutually exclusive on this board (bus-switch
+   routed to the PHY) — see the decision section above. Reconnect them before
+   any further CAN work.
+3. EQUIPMENT TO ACQUIRE: a CAN-FD-capable analyser (PCAN-USB FD or similar).
+   Until then CAN-FD/BRS cannot be validated, and apps/can_logger/src/main.c
+   keeps `#define BOOT_TX_USE_FD 0`. Flip it to 1 once FD gear is on the bench.
+4. HOUSEKEEPING carried over:
+   - If not already done, REMOVE the Windows Defender exclusions added during
+     debugging (elevated): Remove-MpPreference -ExclusionProcess 'JLink.exe';
+     -ExclusionPath 'C:\Program Files\SEGGER\JLink_V948';
+     -ExclusionPath 'D:\BITS_ASSIGNMENTS\ESD\SITUATIONAL_LEARNING'.
+   - build/tz_spike and build/tz_spike2 are throwaway Phase 4 dirs, deletable.
+   - Commit today's hardware results (5 files changed on 2026-08-31:
+     CLAUDE.md, STATE.md, both ek_ra8d1.overlay files,
+     docs/bringup_checklist.md, plus apps/can_logger/src/main.c).
+5. Phase 4 decisions remain CLOSED: TrustZone NO-GO; RSIP-E51A wrapped-key
+   AES-128 CMAC is the chosen security direction, still NOT green-lit for
+   implementation. Do not revisit without an explicit ask.
+6. Remaining genuinely-open items: SDRAM population (still unconfirmed on this
+   revision), the usbfs-vs-usbhs note (Step 3 targets USB-HS deliberately), and
+   the unverified "256-bit HUK" figure for the Phase 6 report.
 
 ## Build commands (from project root D:\BITS_ASSIGNMENTS\ESD\SITUATIONAL_LEARNING)
 PowerShell:
@@ -863,3 +1297,49 @@ PowerShell:
   bootloader/ tools/ doc/), .venv/, build/, and *.pdf (vendor datasheets are
   not ours to redistribute). To rebuild the workspace from a fresh clone:
   `west init -l` + `west update`. Commit the day's bring-up results tomorrow.
+- 2026-08-31: Phase 5 — FIRST HARDWARE SESSION. Steps 0/1/2 of the bring-up
+  checklist all PASS on real silicon: debug link + console, GPIO/LEDs/buttons +
+  100.26 ms measured timer tick, and the CAN-FD driver proven BIDIRECTIONALLY
+  against a PCAN analyser (standard-ID and extended-ID RX with correct IDE
+  flag, board->analyser TX, BUSOK, no error storm). Zero code changes were
+  needed for gpio_timer.
+- 2026-08-31: Phase 5 — the day's flash failures were caused by the board
+  shipping in Renesas DLM state OEM_PL2 / Authentication Level AL2, which makes
+  code flash above the first 32 KiB unerasable. Fixed by Renesas Flash
+  Programmer "Initialize Device". Proven by the same unchanged artifact going
+  0/4 -> 1/1 immediately after. Explicitly NOT image size, NOT AV, NOT board
+  damage, NOT block protection — all tested and eliminated. Neither J-Link nor
+  pyocd can see DLM state; use the vendor tool early for inexplicable RA flash
+  failures.
+- 2026-08-31: Phase 5 — EQUIPMENT GAP: the bench PCAN-USB is CLASSIC CAN ONLY,
+  so CAN-FD/BRS cannot be validated. Deferred until an FD-capable analyser is
+  available; this is a scope limitation to state honestly in the Phase 6
+  report, not a firmware defect. Related driver fact: the RA CAN-FD driver does
+  NOT support CAN_MODE_ONE_SHOT, so auto-retransmission cannot be disabled and
+  one unACKed frame becomes a sustained error storm. can_logger's boot
+  self-transmit was therefore changed to a CLASSIC frame behind
+  `#define BOOT_TX_USE_FD 0`.
+- 2026-08-31: Phase 5 — CANFD0 pin decision RETRACTED and corrected. The
+  2026-08-29 "FINAL CTX0=P203/CRX0=P202" choice, and its 2026-08-30 "user
+  confirmed against Table 1.16" sign-off, were both WRONG: that pin table has
+  two BGA224 columns and P202-P205 are GPIO only in the "BGA224 without MIPI"
+  one. Table 1.13 confirms R7FA8D1BHECBD (PLBG0224GD-A) is the MIPI variant, so
+  on our silicon those pins are permanently MIPI_CL_P/N + MIPI_DL0_P/N — and no
+  board header breaks them out at all (physically confirmed). CONFIRMED FACT,
+  closed. Corrected to CTX0=P704 / CRX0=P705 (Renesas FSP default) in both
+  overlays; software-only change, the breadboard wiring was already on those
+  pins and did not move. Lesson recorded: Zephyr RA pinctrl does not validate
+  PSEL at build time, so three phases of clean builds proved nothing about pins.
+- 2026-08-31: Phase 5 — "CAN + Ethernet concurrent" DOWNGRADED from a hard
+  requirement to SEQUENTIAL USE MODES (capture over CAN, retrieve over Ethernet
+  afterwards). Reason: P704/P705 are bus-switch-routed to the Ethernet PHY in
+  the board hardware, not just multiplexed in pinctrl, so the two cannot run
+  simultaneously on this board under any firmware. Costs no capability, only
+  exact simultaneity, and matches real product use. Bench cost: the CAN
+  transceiver's 2 wires must be physically moved off P704/P705 to test Ethernet
+  and back to test CAN. Future work (not a blocker): find a real board SCHEMATIC
+  — the MCU datasheet alone cannot settle the board-level routing.
+- 2026-08-31: CLAUDE.md's "board is not physically available / build-only"
+  constraint is STALE and was replaced — board, PCAN and rig are on the bench as
+  of today. Anti-hallucination rule 3 (never claim a flash/test passed unless it
+  was actually run this session) is unchanged and now matters more, not less.

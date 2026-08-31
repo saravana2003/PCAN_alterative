@@ -37,11 +37,36 @@ int main(void)
 
 	can_iface_set_rx_handler(on_can_rx, NULL);
 
-	/* Example CAN-FD frame (BRS): standard ID 0x123, 8 data bytes. */
+	/* Boot-time self-transmit: proves the TX path against the bench rig.
+	 *
+	 * BRING-UP CONSTRAINT (2026-08-31): our ground-truth analyser is a
+	 * PCAN-USB, which is CLASSIC CAN ONLY - it cannot decode CAN-FD. An
+	 * FD/BRS frame on that bus is seen as a malformed frame, so the
+	 * analyser emits error frames; the RA CAN-FD controller then
+	 * AUTO-RETRANSMITS (zephyr/include/zephyr/drivers/can.h:1316 - retry
+	 * on lost arbitration or missing ACK is the default), and because
+	 * can_renesas_ra_get_capabilities() does NOT advertise
+	 * CAN_MODE_ONE_SHOT (only NORMAL|LOOPBACK|FD|MANUAL_RECOVERY, driver
+	 * line 413) that retry CANNOT be disabled. One FD frame therefore
+	 * becomes a sustained error storm -> PCAN-View shows BUSHEAVY
+	 * immediately on connect, before any manual frame is sent.
+	 *
+	 * So the boot frame is CLASSIC (no CAN_FRAME_FDF / CAN_FRAME_BRS):
+	 * classic frames are still valid on a CAN-FD controller in FD mode,
+	 * and the analyser can decode and ACK them. Flip BOOT_TX_USE_FD to 1
+	 * when a genuine CAN-FD analyser (e.g. PCAN-USB FD) is available -
+	 * FD/BRS is a real project requirement that this rig cannot validate.
+	 */
+#define BOOT_TX_USE_FD 0
+
 	struct canlog_frame tx = {
 		.id = 0x123,
 		.dlc = 8,
+#if BOOT_TX_USE_FD
 		.flags = CAN_FRAME_FDF | CAN_FRAME_BRS,
+#else
+		.flags = 0,
+#endif
 	};
 
 	for (uint8_t i = 0; i < 8; i++) {

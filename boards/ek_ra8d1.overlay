@@ -2,35 +2,48 @@
  * Project-wide devicetree overlay for the EK-RA8D1 (R7FA8D1BHECBD).
  *
  * Purpose: move CAN-FD channel 0 (CTX0/CRX0) off the pins Zephyr's stock
- * board file uses, because those collide with peripherals this project needs
- * at the same time.
+ * board file uses, onto the Renesas FSP default pair that this board
+ * actually breaks out and that our breadboard transceiver is wired to.
  *
- * Stock ek_ra8d1 canfd0_default (zephyr/boards/renesas/ek_ra8d1/
- * ek_ra8d1-pinctrl.dtsi:87):
- *     CTX0 = P401   <- also ET0_MDC   (mdio_default) AND I3C0 SCL (i3c0_default)
- *     CRX0 = P402   <- also ET0_MDIO  (mdio_default)
- * Renesas FSP default P704/P705 is no good either:
- *     P704 = RMII0_RX_ER_B, P705 = RMII0_CRS_DV_B  (ether_default)
+ *     CTX0 (CAN TX, MCU -> transceiver TXD) = P704
+ *     CRX0 (CAN RX, transceiver RXD -> MCU) = P705
  *
- * This project runs CAN-FD + on-chip Ethernet (RMII + MDIO) + USB HS
- * (+ USB FS if Phase 2C needs it) + Octo-SPI NOR flash + SDRAM controller,
- * all concurrently. The only conflict-free CAN-FD ch0 pin pair is on Port 2,
- * which the stock EK-RA8D1 config does not use at all (ioport2 is not even
- * enabled; SDHI0/SDHI1 are both disabled; the sole Port 2 reference,
- * acmphs_vcout on P208, is /omit-if-no-ref/ and unreferenced).
+ * -------------------------------------------------------------------------
+ * WHY NOT P202/P203 (the Phase 1 decision, RETRACTED 2026-08-31)
+ * -------------------------------------------------------------------------
+ * Phase 1 moved CANFD0 to CTX0=P203 / CRX0=P202 because Port 2 appeared
+ * unused by the stock ek_ra8d1 config. That decision was WRONG, and the
+ * datasheet "confirmation" behind it read the wrong column.
  *
- *     CTX0 (CAN TX, MCU -> transceiver TXD) = P203
- *     CRX0 (CAN RX, transceiver RXD -> MCU) = P202
+ * The RA8D1 datasheet's pin-function table has TWO BGA224 columns:
+ * "BGA224" and "BGA224 without MIPI". P202/P203/P204/P205 exist as GPIO
+ * ONLY in the "without MIPI" column. Datasheet Table 1.13 (Product List)
+ * confirms our exact part -- R7FA8D1BHECBD, package PLBG0224GD-A -- IS the
+ * MIPI variant. On this silicon those four pins are permanently committed
+ * to the MIPI DSI signals MIPI_CL_P/N and MIPI_DL0_P/N. They are not
+ * GPIO, they are not CANFD-capable, and no header on the EK-RA8D1 breaks
+ * them out (physically confirmed on the board).
  *
- * Precedent: the Renesas ek_ra8t2 board file routes CAN-FD ch0 to exactly
- * this pair (CRX0=P202, CTX0=P203). RA8T2 is an adjacent RA8 device with the
- * same CAN-FD IP, but it is NOT the same silicon as the RA8D1 -- so this
- * mapping still needs a cross-check against the R7FA8D1BH datasheet
- * ("Table 1.x List of Pin and Pin Functions", Peripheral Select columns)
- * to confirm P202 = CANFD0_CRX0 and P203 = CANFD0_CTX0 on this part before
- * trusting it on hardware. The Zephyr RA pinctrl driver does not validate
- * PSEL capability at build time, so a wrong choice builds fine and simply
- * won't work on the bench.
+ * -------------------------------------------------------------------------
+ * CONSEQUENCE: CAN and Ethernet are MUTUALLY EXCLUSIVE on this board
+ * -------------------------------------------------------------------------
+ * P704/P705 are RMII0_RX_ER_B / RMII0_CRS_DV_B in the board's ETHERNET-B
+ * mux (ek_ra8d1-pinctrl.dtsi ether_default), and on the EK-RA8D1 they are
+ * bus-switch-routed to the Ethernet PHY in hardware -- this is a board
+ * routing fact, not merely a pinctrl choice. So CAN-FD and on-chip
+ * Ethernet cannot be run simultaneously on this board regardless of which
+ * firmware is flashed.
+ *
+ * DECISION (2026-08-31): "CAN + Ethernet concurrent" is downgraded from a
+ * hard requirement to SEQUENTIAL USE MODES -- capture over CAN, retrieve
+ * the logs over Ethernet afterwards. This matches real product use and
+ * costs no capability; it only removes exact simultaneity.
+ *
+ * PRACTICAL NOTE FOR THE BENCH: switching modes means physically
+ * disconnecting the transceiver's two wires from P704/P705 before testing
+ * Ethernet, and reconnecting them before testing CAN, until a real board
+ * SCHEMATIC (not just the MCU datasheet) turns up a routing that avoids
+ * this. That search is future work, not a blocker.
  *
  * Transceiver STB/standby is hard-wired to GND on the breadboard
  * (permanent normal mode) -- no MCU GPIO controls it, so there is no
@@ -42,12 +55,16 @@
 &pinctrl {
 	/* Overrides the same-named node in ek_ra8d1-pinctrl.dtsi; the psels
 	 * property is replaced wholesale.
+	 *
+	 * Encoding verified against pinctrl-ra.h:144 --
+	 * RA_PSEL(psel,port,pin) = 1<<13 | psel<<8 | pin<<4 | port<<0,
+	 * RA_PSEL_CANFD = 0x10. So P704 -> 0x3047, P705 -> 0x3057.
 	 */
 	canfd0_default: canfd0_default {
 		group1 {
 			/* CRX0 CTX0 */
-			psels = <RA_PSEL(RA_PSEL_CANFD, 2, 2)>,   /* CRX0 -> P202 */
-				<RA_PSEL(RA_PSEL_CANFD, 2, 3)>;   /* CTX0 -> P203 */
+			psels = <RA_PSEL(RA_PSEL_CANFD, 7, 5)>,   /* CRX0 -> P705 */
+				<RA_PSEL(RA_PSEL_CANFD, 7, 4)>;   /* CTX0 -> P704 */
 			drive-strength = "high";
 		};
 	};
