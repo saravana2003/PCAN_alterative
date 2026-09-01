@@ -18,10 +18,14 @@ the retrieval path, not a conformant ISO 13400 stack.
 Applied at boot by `CONFIG_NET_CONFIG_SETTINGS`. On real hardware it only takes
 effect once the PHY link is up.
 
-**Board switches:** the stock Zephyr `ek_ra8d1` uses the *ETHERNET B* RMII
-pin-mux (manual Table 24). Set **SW1-5 ON** (ETH-B), **SW1-4 OFF** (ETH-A),
-**SW1-3 OFF** (camera), **SW1-8 OFF** (I3C). SW1-7 (SDRAM, ON by default) is
-fine — SDRAM only conflicts with ETH-A.
+**Board switches:** SW1 is the 8-way DIP switch beside the RJ45 / PHY (UM
+Figure 1, silkscreen "SW1 / CONFIGURATION SWITCHES") — not a push-button. The
+stock Zephyr `ek_ra8d1` uses the *ETHERNET B* RMII pin-mux (manual Table 24).
+Set **SW1-5 ON** (ETH-B), **SW1-4 OFF** (ETH-A), **SW1-3 OFF** (camera),
+**SW1-8 OFF** (I3C). SW1-7 (SDRAM, ON by default) is fine — SDRAM only conflicts
+with ETH-A. NOTE the factory default is **SW1-3 CAMERA ON / SW1-5 ETH-B OFF**,
+so Ethernet is *not* wired to the PHY out of the box — you must flip SW1-3 off
+and SW1-5 on. Verified on hardware 2026-09-01 (ping + DoIP round-trip).
 
 **Pin conflict (fixed in the app overlay):** stock `ek_ra8d1.dts` enables both
 `&mdio` (ET0_MDC = P401) and `&i3c0` (I3C0_SDA = P401). `apps/eth_doip`'s

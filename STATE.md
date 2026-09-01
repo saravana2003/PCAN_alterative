@@ -7,13 +7,24 @@ exactly where the last one left off without re-reading old chat history.
 
 ## >>> START HERE (new session, read this box first) <<<
 
-**Project state as of 2026-08-31 (session 2).** Board on the bench. Phase 5
-bring-up: Steps 0/1/2 PASS, **Step 3 (USB) now PASSES too**, Step 4 (flash) is
-**blocked on hardware**, Steps 5/6 not started.
+**Project state as of 2026-09-01 (session 3).** Board on the bench. Phase 5
+bring-up: Steps 0/1/2/3 PASS, **Step 5 (Ethernet/DoIP) PASS**, **Step 4 (flash)
+DROPPED** (see below), Step 6 (MCUboot) not started.
 
-**Do this next:** Step 5 (`eth_doip`) — but FIRST physically move the CAN
-transceiver wires off P704/P705 (CAN/Ethernet are mutually exclusive). Step 4
-(`flash_log`) is stuck until the OSPI NOR is checked physically (see #4).
+**SCOPE CHANGE (user, 2026-09-01):** on-board flash logging is **out of scope**.
+The goal is now simply "USB + CAN + Ethernet work on the board". Step 4
+(`flash_log`) is abandoned — it was hardware-blocked anyway (silent OSPI NOR).
+`can_logger` still keeps its SRAM ring; nothing was ripped out, we just stop
+here. CLAUDE.md's Mission paragraph still says "data logging" — leave it, but
+this is the operative direction now.
+
+**Do this next:** Step 6 (MCUboot) is the only remaining bring-up item and it is
+unblocked (Step 2 passed). Flash the signed sysbuild image
+(`build/can_logger_mcuboot`), confirm MCUboot's banner precedes the app, and
+(if time) confirm a bad image is rejected. After that, Phase 5 bring-up is
+complete and the project moves to documentation / the GUI over J-Link VCOM.
+Before any CAN work again, move the transceiver wires back to P704/P705 and set
+SW1 back (SW1-5 OFF); before Ethernet again, SW1-5 ON / SW1-3 OFF.
 
 **Six things that will otherwise waste your time:**
 
@@ -69,11 +80,55 @@ Phase 5 — HARDWARE BRING-UP. **First real hardware session: 2026-08-31.**
 Board, PCAN unit and rig are physically on the bench. Everything before today
 was build-only; CLAUDE.md's old "board not available" constraint is gone.
 
-STATUS (after session 2, 2026-08-31): Steps 0, 1, 2 **PASS**. Step 3 (usb_cdc)
-**PASS** — the RA USB-HS bulk-transfer bug was root-caused (hal_renesas FSP,
-bulk-IN ZLP never committed) and fixed locally; verified end to end on hardware.
-Step 4 (flash_log) **BLOCKED ON HARDWARE** — the OSPI NOR is electrically silent
-(0xFF to every command); not a software issue. Steps 5, 6 not started.
+STATUS (after session 3, 2026-09-01): Steps 0, 1, 2, 3 **PASS**. Step 5
+(eth_doip) **PASS** — PHY links 100M full-duplex, ping 6/6, full DoIP path
+(discovery + routing activation + UDS RDBI VIN) verified from the laptop.
+Step 4 (flash_log) **DROPPED** — user removed logging from scope (2026-09-01);
+was hardware-blocked anyway (silent OSPI NOR, 0xFF to every command). Step 6
+(MCUboot) not started, unblocked.
+
+### Session 3 (2026-09-01) — Step 5 Ethernet / DoIP PASS; flash logging dropped
+- **SCOPE CHANGE (user):** flash logging is out of scope. Goal = USB + CAN +
+  Ethernet working. Step 4 (`flash_log`) abandoned (was hardware-blocked anyway).
+- **Step 5 (`eth_doip`) PASS on hardware.** Pristine rebuild against the current
+  tree (Zephyr `66e5135` + OSPI patch 0001, hal_renesas `f2c2aa6`): exit 0,
+  FLASH 112000 B / RAM 57720 B (~= the Phase 2E build-only record). `west flash`
+  exit 0.
+  - Console over a clean reset: `phy_mii: PHY (5) ID 15F450` -> boot banner
+    `66e5135ffc3c` -> (`net_config: Waiting interface 1 to be up...`) ->
+    **at t≈23 s** `phy_mii: PHY (5) Link speed 100 Mb, full duplex` ->
+    `net_config: IPv4 address: 192.168.1.50` -> DoIP self-test PASS ->
+    `doip_server: DoIP UDP discovery on :13400` + `TCP server on :13400`.
+  - **`ping 192.168.1.50` from the laptop: 6/6, <1 ms, TTL 64.** ARP resolved
+    board MAC **74:90:50:B0:5D:E9** (Renesas OUI, matches the doip_skeleton EID).
+  - **Full DoIP retrieval path exercised from a Python test client** on the
+    laptop (`scratchpad/doip_test.py`), all three stages PASS:
+    1. UDP Vehicle Identification Request (0x0001) -> Vehicle Announcement
+       (0x0004): VIN `EKRA8D1CANLOGGER0`, logical addr 0x1234, EID = board MAC.
+    2. TCP Routing Activation Request (0x0005), tester SA 0x0E80 -> 0x0006,
+       response code **0x10 (success)**, entity LA 0x1234.
+    3. TCP Diagnostic Message (0x8001) SA 0x0E80 / TA 0x1234 / UDS `22 F1 90`
+       -> 0x8002 ACK then 0x8001 carrying `62 F1 90` + `EKRA8D1CANLOGGER0`.
+  - So Ethernet is proven end-to-end: PHY + RMII (ETH-B mux) + Zephyr net stack
+    + UDP & TCP sockets + the DoIP/UDS skeleton logic, all on real silicon.
+- **SW1 config-switch reality (corrected):** SW1 is the single 8-way DIP switch
+  next to the RJ45 / PHY (U15), silkscreen "SW1 / CONFIGURATION SWITCHES", UM
+  Figure 1. The board's **factory default is SW1-3 CAMERA=ON, SW1-5 ETH-B=OFF**
+  — i.e. Ethernet is NOT wired to the PHY out of the box (STATE.md previously
+  implied SW1-5 ON was default; it is not). For Ethernet-B: set **SW1-5 ON,
+  SW1-3 OFF** (SW1-4/SW1-6/SW1-8 already OFF, SW1-7 SDRAM stays ON). Used this
+  session: SW1-5 ON + SW1-7 ON, everything else OFF. CAN transceiver wires
+  physically off P704/P705.
+- **Laptop NIC:** USB-C Ethernet dongle ("Ethernet 2", ASIX AX88179) set static
+  **192.168.1.10 / 255.255.255.0**, no gateway. Link came up 100 Mbps full duplex.
+- **Minor observation, not chased:** PHY link takes ~23 s to report up after an
+  MCU reset (normal auto-neg is 2-4 s). `ethernet-phy@5` has no `reset-gpios`;
+  `docs/doip_skeleton.md` already notes adding
+  `reset-gpios = <&ioport7 6 GPIO_ACTIVE_LOW>` (ETH-B RESET_N = P706) if link
+  ever fails. It doesn't fail, just starts slow — left alone.
+- Scratchpad helpers this session: `cap.py <port> <secs>` (pyserial console
+  capture), `reset.jlink` (JLink CommanderScript: reset+go), `doip_test.py`
+  (the DoIP client above). Recreate from git history / this entry if gone.
 
 ### Session 2 (2026-08-31) — Zephyr bump + both upstream bugs
 - **Zephyr `f80761e4940` -> `66e5135ffc3`** (mainline HEAD), detached HEAD, on
@@ -1127,21 +1182,26 @@ ek_ra8d1-pinctrl.dtsi.
    hardware bring-up record — DLM root cause, Steps 0/1/2 results, the
    classic-only-analyser limitation, and tooling gotchas. Do not re-diagnose
    any of it.
-1. STEP 3 (usb_cdc) IS DONE AS FAR AS IT CAN GO. Our stack-overflow bug is
-   fixed and USB ENUMERATION WORKS; bulk data transfer is broken inside
-   Zephyr's RA USB-HS stack, proven with Zephyr's own stock cdc_acm sample and
-   confirmed unfixed in current mainline (see sections 3 and 3b). DO NOT
-   re-debug this as an application bug.
-   RESUME AT **Step 4 (flash_log)**, including the power-cycle persistence
-   check — that is the next genuinely untested thing and needs no USB.
-   Then Step 5 (eth_doip) and Step 6 (MCUboot; Step 2 passes, so it is
-   unblocked).
-   For the GUI link meanwhile, use the J-Link VCOM/UART transport (decision in
-   section 3b); CLP is transport-agnostic so no protocol change is needed.
-2. BEFORE STEP 5 (Ethernet), physically MOVE THE CAN TRANSCEIVER WIRES off
-   P704/P705. CAN and Ethernet are mutually exclusive on this board (bus-switch
-   routed to the PHY) — see the decision section above. Reconnect them before
-   any further CAN work.
+1. Steps 0/1/2/3/5 all PASS on hardware (see the session 3 + session 2 records
+   above). Step 4 (flash_log) is DROPPED — logging is out of scope now.
+   **RESUME AT Step 6 (MCUboot)** — the last bring-up item, and unblocked:
+     .venv\Scripts\west build -b ek_ra8d1 apps/can_logger -d build/can_logger_mcuboot --sysbuild -p always
+     .venv\Scripts\west flash -d build/can_logger_mcuboot
+   Confirm MCUboot's banner prints before can_logger's boot banner on COM12.
+   If time: flash a deliberately-corrupted image and confirm MCUboot rejects it.
+   NOTE the mode is OVERWRITE_ONLY (no A/B swap-back) — see the Phase 3 summary.
+   After Step 6, Phase 5 bring-up is COMPLETE -> move to the GUI (over J-Link
+   VCOM/UART; CLP is transport-agnostic) and Phase 6 documentation.
+   Before flashing can_logger again, put SW1-5 back to OFF and reconnect the CAN
+   transceiver to P704/P705 (CAN and Ethernet are mutually exclusive).
+2. Ethernet bench setup that worked (session 3), for repeat runs:
+   - SW1: 5 ON, 7 ON, everything else OFF (default has SW1-3 CAMERA ON / SW1-5
+     OFF, so you MUST flip SW1-3 off and SW1-5 on — Ethernet is not wired to the
+     PHY by default).
+   - CAN transceiver wires OFF P704/P705.
+   - Laptop USB-C Ethernet dongle ("Ethernet 2") static 192.168.1.10/24, no gw.
+   - Board is 192.168.1.50; DoIP on :13400 (UDP+TCP). Test client:
+     scratchpad/doip_test.py. Console capture: scratchpad/cap.py COM12 30.
 3. EQUIPMENT TO ACQUIRE: a CAN-FD-capable analyser (PCAN-USB FD or similar).
    Until then CAN-FD/BRS cannot be validated, and apps/can_logger/src/main.c
    keeps `#define BOOT_TX_USE_FD 0`. Flip it to 1 once FD gear is on the bench.
@@ -1423,3 +1483,22 @@ PowerShell:
 - 2026-08-31 (session 2): restored `C:\Python312\Lib` (+ `DLLs\*.pyd`) from the
   identical 3.12.3 install under `%LOCALAPPDATA%\Programs\Python\Python312` — the
   venv's base stdlib had been deleted, which was making every Zephyr build crawl.
+- 2026-09-01 (session 3): **SCOPE CHANGE (user).** On-board flash logging is
+  removed from scope. The project goal is now "USB + CAN + Ethernet work on the
+  board" (all three now proven on hardware). Step 4 (`flash_log`) is abandoned —
+  it was hardware-blocked anyway (silent OSPI NOR). No code removed; `can_logger`
+  keeps its SRAM ring. CLAUDE.md's Mission still literally says "data logging" —
+  not edited (rarely-change file), but this decision is operative.
+- 2026-09-01 (session 3): **Step 5 (Ethernet / DoIP) PASS on hardware.** PHY
+  links 100M full-duplex (slow, ~23 s), `ping 192.168.1.50` 6/6, and the full
+  DoIP path — UDP Vehicle Identification -> Announcement, TCP Routing Activation
+  -> success 0x10, TCP Diagnostic Message with UDS `22 F1 90` -> `62 F1 90` +
+  VIN `EKRA8D1CANLOGGER0` — verified from a laptop Python client. Ethernet stack,
+  UDP+TCP sockets and the DoIP/UDS skeleton are proven end-to-end on silicon.
+- 2026-09-01 (session 3): **SW1 factory-default correction.** SW1 is the 8-way
+  DIP switch by the RJ45/PHY (UM Fig. 1, silkscreen "SW1 / CONFIGURATION
+  SWITCHES"). Factory default is **SW1-3 CAMERA ON, SW1-5 ETH-B OFF** — Ethernet
+  is NOT connected to the PHY out of the box. The 2026-08-29 decision line that
+  says 'the board uses ETH-B (SW1-5 ON)' is right about which mux Zephyr expects
+  but wrong to imply it is the default. For Ethernet: SW1-5 ON + SW1-3 OFF
+  (others OFF, SW1-7 SDRAM stays ON).

@@ -8,8 +8,8 @@
 | 1 | `gpio_timer` | **PASS** — LEDs, both buttons, timer measured at 100.26 ms/tick |
 | 2 | `can_logger` | **PASS** — CAN-FD proven both directions vs PCAN (FD/BRS deferred, see below) |
 | 3 | `usb_cdc` | **PASS** (2026-08-31 s2) — RA USB-HS bulk-IN ZLP bug root-caused in hal_renesas FSP and fixed (`patches/0002`); host reads the CLP HELLO frame, both directions verified. `zephyr_usb_hs_bug.md`. |
-| 4 | `flash_log` | **BLOCKED ON HARDWARE** — OSPI NOR (U3) answers `0xFF` to every command, warm/cold/power-cycled. Not software. Needs a physical check of U3 + OSPI config links. `zephyr_ospi_cs_reset_bug.md`. |
-| 5 | `eth_doip` | **NEXT** (move CAN wires off P704/P705 first) |
+| 4 | `flash_log` | **DROPPED** (user decision 2026-09-01 — logging is out of scope; goal is USB+CAN+Ethernet). Was blocked on hardware anyway: OSPI NOR (U3) answers `0xFF` to every command. `zephyr_ospi_cs_reset_bug.md`. |
+| 5 | `eth_doip` | **PASS** (2026-09-01) — PHY links 100M full-duplex, `ping 192.168.1.50` 6/6, full DoIP path verified from the laptop (UDP discovery + TCP routing activation + UDS ReadDataByIdentifier VIN). |
 | 6 | MCUboot | not started (unblocked — step 2 passes) |
 
 Full detail for every result is in `STATE.md`. Work top to bottom. Do not start
@@ -164,8 +164,14 @@ is progress; a failure you skipped past will cost you twice later.
 > (2026-08-31): CAN and Ethernet are **sequential use modes** — capture over
 > CAN, retrieve over Ethernet afterwards.
 
-- [ ] **SW1-5 is in the ETHB position** the code assumes.
-- [ ] `ping 192.168.1.50` from the laptop answers.
+- [x] **SW1-5 is in the ETHB position** the code assumes. (2026-09-01: SW1-5 ON,
+      SW1-7 ON, all others OFF. NOTE: the board's *factory default* is SW1-3
+      CAMERA=ON / SW1-5 ETH-B=OFF, i.e. Ethernet is NOT wired to the PHY out of
+      the box — you must flip SW1-3 OFF and SW1-5 ON. UM Table 3.)
+- [x] `ping 192.168.1.50` from the laptop answers. (2026-09-01: 6/6, <1 ms,
+      TTL 64; board MAC 74:90:50:B0:5D:E9 resolved via ARP. PHY link took ~23 s
+      to come up after MCU reset — slow but reliable; `ethernet-phy@5` has no
+      `reset-gpios`.)
 
 > If nothing answers: check the **RJ45 link LED** and the **PHY-negotiation
 > lines in the serial console** *before* assuming it's a code bug. No link means
