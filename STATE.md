@@ -7,24 +7,25 @@ exactly where the last one left off without re-reading old chat history.
 
 ## >>> START HERE (new session, read this box first) <<<
 
-**Project state as of 2026-09-01 (session 3).** Board on the bench. Phase 5
-bring-up: Steps 0/1/2/3 PASS, **Step 5 (Ethernet/DoIP) PASS**, **Step 4 (flash)
-DROPPED** (see below), Step 6 (MCUboot) not started.
+**Project state as of 2026-09-01 (session 3).** Board on the bench. **PHASE 5
+HARDWARE BRING-UP IS COMPLETE.** Steps 0/1/2/3 PASS, Step 4 (flash) DROPPED
+(scope change), **Step 5 (Ethernet/DoIP) PASS**, **Step 6 (MCUboot) PASS**.
+Every remaining capability the project cares about is proven on real silicon.
 
 **SCOPE CHANGE (user, 2026-09-01):** on-board flash logging is **out of scope**.
-The goal is now simply "USB + CAN + Ethernet work on the board". Step 4
-(`flash_log`) is abandoned — it was hardware-blocked anyway (silent OSPI NOR).
-`can_logger` still keeps its SRAM ring; nothing was ripped out, we just stop
-here. CLAUDE.md's Mission paragraph still says "data logging" — leave it, but
-this is the operative direction now.
+The goal is now simply "USB + CAN + Ethernet work on the board" — all three done.
+Step 4 (`flash_log`) is abandoned — it was hardware-blocked anyway (silent OSPI
+NOR). `can_logger` still keeps its SRAM ring; nothing was ripped out. CLAUDE.md's
+Mission paragraph still says "data logging" — leave it, but this is the operative
+direction now.
 
-**Do this next:** Step 6 (MCUboot) is the only remaining bring-up item and it is
-unblocked (Step 2 passed). Flash the signed sysbuild image
-(`build/can_logger_mcuboot`), confirm MCUboot's banner precedes the app, and
-(if time) confirm a bad image is rejected. After that, Phase 5 bring-up is
-complete and the project moves to documentation / the GUI over J-Link VCOM.
-Before any CAN work again, move the transceiver wires back to P704/P705 and set
-SW1 back (SW1-5 OFF); before Ethernet again, SW1-5 ON / SW1-3 OFF.
+**Do this next:** bring-up is done — the project moves to **the host GUI** (over
+the J-Link VCOM/UART; CLP is transport-agnostic and its self-test passes on
+hardware every boot) and **Phase 6 documentation** (the BITS WILP ESD report,
+assembled from the real hardware results now in hand). No more bring-up steps.
+Board is currently left running MCUboot + signed `can_logger` in the CAN bench
+config (SW1-5 OFF, transceiver on P704/P705). For Ethernet again: SW1-5 ON /
+SW1-3 OFF and move the transceiver wires off P704/P705.
 
 **Six things that will otherwise waste your time:**
 
@@ -80,12 +81,12 @@ Phase 5 — HARDWARE BRING-UP. **First real hardware session: 2026-08-31.**
 Board, PCAN unit and rig are physically on the bench. Everything before today
 was build-only; CLAUDE.md's old "board not available" constraint is gone.
 
-STATUS (after session 3, 2026-09-01): Steps 0, 1, 2, 3 **PASS**. Step 5
-(eth_doip) **PASS** — PHY links 100M full-duplex, ping 6/6, full DoIP path
-(discovery + routing activation + UDS RDBI VIN) verified from the laptop.
-Step 4 (flash_log) **DROPPED** — user removed logging from scope (2026-09-01);
-was hardware-blocked anyway (silent OSPI NOR, 0xFF to every command). Step 6
-(MCUboot) not started, unblocked.
+STATUS (after session 3, 2026-09-01): **Phase 5 bring-up COMPLETE.** Steps 0, 1,
+2, 3 **PASS**. Step 5 (eth_doip) **PASS** — PHY links 100M full-duplex, ping 6/6,
+full DoIP path verified from the laptop. Step 6 (MCUboot) **PASS** — bootloader
+banner precedes the app, signed image chainloads, bad image rejected. Step 4
+(flash_log) **DROPPED** — user removed logging from scope; was hardware-blocked
+anyway (silent OSPI NOR). Next: host GUI + Phase 6 report.
 
 ### Session 3 (2026-09-01) — Step 5 Ethernet / DoIP PASS; flash logging dropped
 - **SCOPE CHANGE (user):** flash logging is out of scope. Goal = USB + CAN +
@@ -126,9 +127,32 @@ was hardware-blocked anyway (silent OSPI NOR, 0xFF to every command). Step 6
   `docs/doip_skeleton.md` already notes adding
   `reset-gpios = <&ioport7 6 GPIO_ACTIVE_LOW>` (ETH-B RESET_N = P706) if link
   ever fails. It doesn't fail, just starts slow — left alone.
+- **Step 6 (MCUboot) PASS on hardware.** Pristine `--sysbuild -p always` rebuild
+  of `build/can_logger_mcuboot` against the current tree: exit 0. mcuboot 39048 B
+  (fits the 128K boot_partition), signed can_logger 46108 B of the 928K slot0
+  (4.86%). `west flash -d build/can_logger_mcuboot` flashes BOTH domains
+  (mcuboot @ 0x0, `zephyr.signed.hex` @ 0x20000), exit 0.
+  - Console over reset: `*** Using Zephyr OS build 66e5135ffc3c ***` /
+    `I: Starting bootloader` / `I: Image index: 0, Swap type: none` /
+    `I: Bootloader chainload address offset: 0x20000` / `I: Image version:
+    v0.0.0` / `I: Jumping to the first image slot` -> THEN the app:
+    `*** Booting Zephyr OS build 66e5135ffc3c ***` + `can_iface: canfd0 started`.
+    MCUboot verified the ECDSA-P256 signature and chainloaded.
+  - **Negative test PASS:** erased the 32K block at slot0 start (0x02020000) with
+    J-Link (`erase 0x02020000 0x02027FFF`; verified mem there = FF, and 0x0
+    untouched). MCUboot then prints `E: Unable to find bootable image` and halts
+    — no app banner. Re-flashed the signed image; good boot restored and
+    confirmed. So MCUboot does NOT boot an image with an invalid header/sig.
+  - Mode is OVERWRITE_ONLY (Phase 3 decision — flash0 write-block-size 128 vs
+    MCUboot's BOOT_MAX_ALIGN<=32 for swap modes). No A/B auto-revert; recovery
+    from a bad update = re-flash a good higher-versioned image.
+  - Still on the module DEBUG signing key (`root-ec-p256.pem`) — build logs the
+    "for debug use" warning. A real project key is a one-line config change
+    (`SB_CONFIG_BOOT_SIGNATURE_KEY_FILE`), private key kept offline. Report item.
 - Scratchpad helpers this session: `cap.py <port> <secs>` (pyserial console
-  capture), `reset.jlink` (JLink CommanderScript: reset+go), `doip_test.py`
-  (the DoIP client above). Recreate from git history / this entry if gone.
+  capture), `reset.jlink` (JLink CommanderScript: reset+go),
+  `corrupt_slot0.jlink` (erase slot0 header for the MCUboot negative test),
+  `doip_test.py` (the DoIP client). Recreate from git history / these entries.
 
 ### Session 2 (2026-08-31) — Zephyr bump + both upstream bugs
 - **Zephyr `f80761e4940` -> `66e5135ffc3`** (mainline HEAD), detached HEAD, on
@@ -1182,18 +1206,23 @@ ek_ra8d1-pinctrl.dtsi.
    hardware bring-up record — DLM root cause, Steps 0/1/2 results, the
    classic-only-analyser limitation, and tooling gotchas. Do not re-diagnose
    any of it.
-1. Steps 0/1/2/3/5 all PASS on hardware (see the session 3 + session 2 records
-   above). Step 4 (flash_log) is DROPPED — logging is out of scope now.
-   **RESUME AT Step 6 (MCUboot)** — the last bring-up item, and unblocked:
-     .venv\Scripts\west build -b ek_ra8d1 apps/can_logger -d build/can_logger_mcuboot --sysbuild -p always
-     .venv\Scripts\west flash -d build/can_logger_mcuboot
-   Confirm MCUboot's banner prints before can_logger's boot banner on COM12.
-   If time: flash a deliberately-corrupted image and confirm MCUboot rejects it.
-   NOTE the mode is OVERWRITE_ONLY (no A/B swap-back) — see the Phase 3 summary.
-   After Step 6, Phase 5 bring-up is COMPLETE -> move to the GUI (over J-Link
-   VCOM/UART; CLP is transport-agnostic) and Phase 6 documentation.
-   Before flashing can_logger again, put SW1-5 back to OFF and reconnect the CAN
-   transceiver to P704/P705 (CAN and Ethernet are mutually exclusive).
+1. **PHASE 5 BRING-UP IS COMPLETE.** Steps 0/1/2/3/5/6 all PASS on hardware
+   (session 3 + session 2 records above). Step 4 (flash_log) DROPPED — logging
+   is out of scope. There are no more bring-up steps. Two tracks remain:
+   a) **Host GUI** — a PC-side app that speaks CLP over the J-Link VCOM/UART
+      (COM12, 115200). CLP is transport-agnostic and its on-device self-test
+      passes every boot. `docs/clp_protocol.md` is the spec; `scratchpad`'s
+      throwaway Python clients (doip_test.py etc.) show the pattern.
+   b) **Phase 6 — the BITS WILP ESD report.** All the deliverables it maps to
+      now have REAL measured hardware results: NVIC/interrupts (CAN RX IRQ 45 +
+      button IRQs 88/89), timer (100.26 ms/tick measured), CAN-FD driver,
+      Ethernet/DoIP, MCUboot verified boot. See PROMPTS.md's Documentation phase.
+   Honest gaps to state in the report: CAN-FD/BRS unvalidated (classic-only
+   analyser), USB-HS bulk needed an upstream hal_renesas fix, OSPI NOR dead on
+   this board, MCUboot on the debug key.
+   Before flashing an Ethernet build again: SW1-5 ON / SW1-3 OFF and move the
+   transceiver wires off P704/P705. Board is currently in CAN config running
+   MCUboot + signed can_logger.
 2. Ethernet bench setup that worked (session 3), for repeat runs:
    - SW1: 5 ON, 7 ON, everything else OFF (default has SW1-3 CAMERA ON / SW1-5
      OFF, so you MUST flip SW1-3 off and SW1-5 on — Ethernet is not wired to the
@@ -1502,3 +1531,9 @@ PowerShell:
   says 'the board uses ETH-B (SW1-5 ON)' is right about which mux Zephyr expects
   but wrong to imply it is the default. For Ethernet: SW1-5 ON + SW1-3 OFF
   (others OFF, SW1-7 SDRAM stays ON).
+- 2026-09-01 (session 3): **Step 6 (MCUboot) PASS on hardware — Phase 5 bring-up
+  COMPLETE.** Signed `can_logger` (ECDSA-P256, module debug key) chainloads from
+  slot0 @ 0x20000 after the MCUboot banner; erasing the slot0 header makes
+  MCUboot refuse (`E: Unable to find bootable image`). OVERWRITE_ONLY mode, no
+  auto-revert. Nothing left to bring up — next work is the host GUI (CLP over
+  J-Link VCOM) and the Phase 6 report.

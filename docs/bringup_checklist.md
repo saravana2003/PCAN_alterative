@@ -10,7 +10,7 @@
 | 3 | `usb_cdc` | **PASS** (2026-08-31 s2) — RA USB-HS bulk-IN ZLP bug root-caused in hal_renesas FSP and fixed (`patches/0002`); host reads the CLP HELLO frame, both directions verified. `zephyr_usb_hs_bug.md`. |
 | 4 | `flash_log` | **DROPPED** (user decision 2026-09-01 — logging is out of scope; goal is USB+CAN+Ethernet). Was blocked on hardware anyway: OSPI NOR (U3) answers `0xFF` to every command. `zephyr_ospi_cs_reset_bug.md`. |
 | 5 | `eth_doip` | **PASS** (2026-09-01) — PHY links 100M full-duplex, `ping 192.168.1.50` 6/6, full DoIP path verified from the laptop (UDP discovery + TCP routing activation + UDS ReadDataByIdentifier VIN). |
-| 6 | MCUboot | not started (unblocked — step 2 passes) |
+| 6 | MCUboot | **PASS** (2026-09-01) — bootloader banner precedes the app, signed `can_logger` chainloads from slot0 @ 0x20000; erasing the slot0 header makes MCUboot refuse to boot (`E: Unable to find bootable image`). |
 
 Full detail for every result is in `STATE.md`. Work top to bottom. Do not start
 a step until the previous one either passes or its failure is fully understood
@@ -185,11 +185,18 @@ is progress; a failure you skipped past will cost you twice later.
 up the bootloader over an app you haven't proven gives you two unknowns stacked
 on each other.
 
-- [ ] Flash the signed sysbuild image.
-- [ ] **MCUboot's banner appears before the app's own startup.**
-- [ ] *(If time allows)* Deliberately flash a **bad/unsigned image** and confirm
-      it is **rejected** — that rejection is the actual feature under test. A
-      bootloader that boots everything you give it has not been tested.
+- [x] Flash the signed sysbuild image. (2026-09-01: `west flash -d
+      build/can_logger_mcuboot` flashes both domains — mcuboot @ 0x0, signed app
+      @ 0x20000. Sizes: mcuboot 39048 B, signed can_logger 46108 B of 928K slot0.)
+- [x] **MCUboot's banner appears before the app's own startup.** (2026-09-01:
+      `*** Using Zephyr OS build 66e5135ffc3c *** / I: Starting bootloader / ...
+      I: Bootloader chainload address offset: 0x20000 / I: Jumping to the first
+      image slot` — THEN `*** Booting Zephyr OS ***` + `canfd0 started`.)
+- [x] Deliberately break the image and confirm it is **rejected**. (2026-09-01:
+      erased the 32K block at slot0 start (0x02020000) via J-Link — MCUboot then
+      prints `E: Unable to find bootable image` and halts, no app banner.
+      Restored by re-flashing; good boot confirmed. NOTE mode is OVERWRITE_ONLY
+      — no A/B auto-revert; "rollback" = re-flash a good image.)
 
 ---
 
