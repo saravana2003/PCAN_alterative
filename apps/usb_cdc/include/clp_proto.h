@@ -79,8 +79,10 @@ enum clp_msg_type {
 };
 
 /*
- * CAN-frame flags. Bit positions match the meaning of Zephyr's CAN_FRAME_*
- * flags so a value maps 1:1 onto the Phase 2A canlog_frame.flags field.
+ * CAN-frame flags. These are CLP wire bits and are NOT numerically the same as
+ * Zephyr's CAN_FRAME_* (e.g. CAN_FRAME_IDE is BIT(0), CLP_CANF_IDE is BIT(3)).
+ * Code bridging the CLP layer to the Zephyr CAN API must translate explicitly —
+ * see clp_flags_from_can() / can_flags_from_clp() in apps/can_logger/src/main.c.
  */
 #define CLP_CANF_FDF  BIT(0) /* CAN-FD format frame          */
 #define CLP_CANF_BRS  BIT(1) /* bit-rate switch (FD)         */
@@ -91,7 +93,8 @@ enum clp_msg_type {
 /**
  * @brief Decoded CAN frame carried by CLP_MSG_CAN_RX and CLP_MSG_CAN_TX.
  *
- * Field semantics deliberately mirror the Phase 2A struct canlog_frame.
+ * Field semantics mirror the Phase 2A struct canlog_frame, but @p flags uses
+ * the CLP_CANF_* bit layout, not Zephyr's CAN_FRAME_* — translate at the edge.
  */
 struct clp_can_frame {
 	uint32_t can_id;      /* 11- or 29-bit id (no flag bits packed in)      */

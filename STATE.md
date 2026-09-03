@@ -7,10 +7,20 @@ exactly where the last one left off without re-reading old chat history.
 
 ## >>> START HERE (new session, read this box first) <<<
 
-**Project state as of 2026-09-01 (session 3).** Board on the bench. **PHASE 5
+**Project state as of 2026-09-03 (session 4).** Board on the bench. **PHASE 5
 HARDWARE BRING-UP IS COMPLETE.** Steps 0/1/2/3 PASS, Step 4 (flash) DROPPED
 (scope change), **Step 5 (Ethernet/DoIP) PASS**, **Step 6 (MCUboot) PASS**.
 Every remaining capability the project cares about is proven on real silicon.
+
+**Session 4 (2026-09-03): CAN <-> host integration DONE + HW-verified.**
+`apps/can_logger` now wires the Phase 2A CAN-FD driver to the Phase 2C CLP
+protocol over the console UART (COM12). On hardware: live PCAN frames (std
+0x123 + ext 0x18DAF110) decoded by `host/clp_client.py` with zero CRC/COBS
+errors and zero drops; host->board CAN_TX (0x7DF) reached the bus and PCAN
+received it; HELLO + 1 Hz STATUS work. Board is currently running this PLAIN
+image (MCUboot overwritten — restore with `west build --sysbuild` +
+`west flash -d build/can_logger_mcuboot` when needed). Full detail: Session 4
+entry below.
 
 **SCOPE CHANGE (user, 2026-09-01):** on-board flash logging is **out of scope**.
 The goal is now simply "USB + CAN + Ethernet work on the board" — all three done.
@@ -19,13 +29,14 @@ NOR). `can_logger` still keeps its SRAM ring; nothing was ripped out. CLAUDE.md'
 Mission paragraph still says "data logging" — leave it, but this is the operative
 direction now.
 
-**Do this next:** bring-up is done — the project moves to **the host GUI** (over
-the J-Link VCOM/UART; CLP is transport-agnostic and its self-test passes on
-hardware every boot) and **Phase 6 documentation** (the BITS WILP ESD report,
-assembled from the real hardware results now in hand). No more bring-up steps.
-Board is currently left running MCUboot + signed `can_logger` in the CAN bench
-config (SW1-5 OFF, transceiver on P704/P705). For Ethernet again: SW1-5 ON /
-SW1-3 OFF and move the transceiver wires off P704/P705.
+**Do this next:** the firmware transport now works end-to-end. Remaining:
+(a) a real **host GUI** on top of `host/clp_client.py` (the CLP decode/encode +
+COBS + CRC-16/X-25 are done and HW-proven there); (b) **Phase 6 documentation**
+(BITS WILP ESD report). Optional polish: higher UART baud (currently 115200 —
+`current-speed` in the overlay) if frame-rate headroom is wanted; restore the
+MCUboot sysbuild image; re-run the Ethernet build once (needs SW1-5 ON / SW1-3
+OFF + transceiver wires off P704/P705). Board is in the CAN bench config
+(SW1-7 ON only, transceiver on P704/P705).
 
 **Six things that will otherwise waste your time:**
 
@@ -86,7 +97,70 @@ STATUS (after session 3, 2026-09-01): **Phase 5 bring-up COMPLETE.** Steps 0, 1,
 full DoIP path verified from the laptop. Step 6 (MCUboot) **PASS** — bootloader
 banner precedes the app, signed image chainloads, bad image rejected. Step 4
 (flash_log) **DROPPED** — user removed logging from scope; was hardware-blocked
-anyway (silent OSPI NOR). Next: host GUI + Phase 6 report.
+anyway (silent OSPI NOR).
+
+STATUS (after session 4, 2026-09-03): **CAN <-> host CLP integration works on
+hardware, both directions.** Next: host GUI + Phase 6 report.
+
+### Session 4 (2026-09-03) — CAN-FD <-> CLP host link integrated + HW-verified
+Wired the Phase 2A CAN-FD module to the Phase 2C CLP protocol in ONE
+`apps/can_logger` image, transport = the console UART (J-Link VCOM, COM12).
+This is the integration every Phase 2 prompt deferred to "when hardware is
+available".
+- **New/changed files:**
+  - `apps/can_logger/src/clp_uart.c` + `include/clp_uart.h` — UART transport
+    glue (analogue of usb_cdc's `usb_link.c`). ISR shuttles bytes <-> rings;
+    a worker thread runs the CLP parser off the ISR.
+  - `apps/can_logger/src/main.c` — rewritten. RX ISR does only `k_msgq_put`;
+    `pump_thread` drains the msgq -> `CLP_MSG_CAN_RX`, and emits `CLP_MSG_STATUS`
+    ~1 Hz. `on_tx_request` (rx_thread ctx) does `can_iface_send` + `CAN_TX_ACK`.
+    Keeps the classic boot self-TX (`#define BOOT_TX_USE_FD 0`).
+  - `apps/can_logger/CMakeLists.txt` — references `../usb_cdc/src/clp_proto.c`
+    in place (one source of truth; CLP is transport-agnostic).
+  - `apps/can_logger/prj.conf` — `CONFIG_UART_CONSOLE=n`, logs+printk -> SEGGER
+    RTT (`LOG_BACKEND_RTT`, `RTT_CONSOLE`, drop mode) so COM12 is a clean CLP
+    byte stream. + COBS/CRC/RING_BUFFER/UART_INTERRUPT_DRIVEN.
+  - `apps/usb_cdc/include/clp_proto.h` — comment fix only: CLP flag bits are
+    NOT numerically Zephyr's `CAN_FRAME_*` (IDE=BIT(0) vs BIT(3) etc.).
+    `main.c` now translates explicitly (`clp_flags_from_can` / `_from_clp`).
+    Latent bug the build-only usb_cdc self-test never hit.
+  - `host/clp_client.py` (NEW, committed — seed of the GUI) — COBS + CRC-16/X-25
+    decoder/injector. `python host/clp_client.py COM12 [--tx ID:HEX [--ext]]`.
+- **Build:** `west build -b ek_ra8d1 apps/can_logger -d build/can_logger -p always`
+  exit 0, 0 warnings. FLASH 50832 B (2.46%), RAM 28232 B (3.08%).
+- **Flash:** plain image to 0x02000000 via J-Link (`loadfile` + `r` + `g`).
+  **This OVERWROTE the MCUboot sysbuild image** from session 3. To restore:
+  `west build -b ek_ra8d1 apps/can_logger -d build/can_logger_mcuboot --sysbuild
+  -p always` then `west flash -d build/can_logger_mcuboot`.
+- **Hardware results (bench, PCAN classic @ 500k, SW1-7 ON only):**
+  - `HELLO`: `proto_ver=1 max_payload=80 fw='can_logger clp-uart v0.1'` on boot.
+  - **PCAN -> board -> host (`CAN_RX`):** `id=0x123 dlc=8 flags=- data=123456789abcdeff`
+    (std classic) and `id=0x18DAF110 dlc=8 flags=IDE data=1234567833334512`
+    (ext 29-bit, IDE flag correct, ID intact). ~23 frames, **0 CRC errors,
+    0 COBS errors, 0 rx_drops**. `STATUS.rx_frames` tracked every frame; bus
+    stayed `ERROR_ACTIVE` (no BUSHEAVY, board ACKing).
+  - **host -> board -> PCAN (`CAN_TX`):** client sent `CAN_TX id=0x7DF
+    data=0201000000000000` -> board replied `CAN_TX_ACK tag=0xbeef status=0`,
+    `STATUS.tx_frames=1 tx_err=0`, and **PCAN-View received 0x7DF** (user
+    confirmed). Boot self-TX 0x123 `0001020304050607` also seen in PCAN on
+    reset (user confirmed).
+  - Single UART interleaves STATUS / CAN_RX / CAN_TX_ACK with no corruption;
+    per-direction seq monotonic.
+- **Bench/tooling gotchas hit this session (cost ~30 min):**
+  1. **Never let `timeout` SIGKILL a `JLink.exe` mid-op** — it wedges the
+     J-Link OB USB endpoint (`JLINK_OpenEx` then hangs forever; `ShowEmuList`
+     still works). Only fix = user physically unplugs/replugs the Debug USB.
+     Also **never put a bare `h` (halt) in a JLink script** without a matching
+     `g` — a dying session leaves the CPU halted => no firmware => PCAN goes
+     BUSHEAVY (no ACK). Clean flash script: `connect / loadfile / r / g / exit`.
+  2. **`python ... > file` block-buffers** — a `timeout`-killed capture writes
+     nothing. Use `python -u` and a real background task, not a shell `&`
+     subshell (which dies when the tool call returns).
+  3. One serial reader at a time — overlapping `clp_client.py` runs =
+     `PermissionError(13) Access is denied` on COM12.
+- Scratchpad helpers (recreate from git/these notes): `reset.jlink`
+  (connect/r/g/q), `f.jlink` (connect/loadfile/r/g/exit). `host/clp_client.py`
+  is committed, not scratchpad.
 
 ### Session 3 (2026-09-01) — Step 5 Ethernet / DoIP PASS; flash logging dropped
 - **SCOPE CHANGE (user):** flash logging is out of scope. Goal = USB + CAN +
@@ -1537,3 +1611,27 @@ PowerShell:
   MCUboot refuse (`E: Unable to find bootable image`). OVERWRITE_ONLY mode, no
   auto-revert. Nothing left to bring up — next work is the host GUI (CLP over
   J-Link VCOM) and the Phase 6 report.
+- 2026-09-03 (session 4): **CAN-FD <-> CLP host link INTEGRATED and HW-verified,
+  both directions.** `apps/can_logger` = one image: Phase 2A CAN driver ->
+  `k_msgq` -> pump thread -> CLP `CAN_RX` over the console UART (COM12);
+  host `CAN_TX` -> `can_iface_send` -> bus, + `CAN_TX_ACK`; HELLO + 1 Hz STATUS.
+  Transport = the J-Link VCOM (chosen over USB CDC — no 2nd cable, always
+  present); `CONFIG_UART_CONSOLE=n`, logs to SEGGER RTT so COM12 carries only
+  CLP. Reuses `usb_cdc/clp_proto.c` verbatim (in-place, one source of truth).
+  Bench: std 0x123 + ext 0x18DAF110 from PCAN decoded by `host/clp_client.py`
+  (0 CRC/COBS errors, 0 drops); host->board 0x7DF reached the bus (PCAN RX
+  confirmed). FLASH 50832 B / RAM 28232 B. Plain image flashed to 0x02000000 —
+  **MCUboot overwritten** (restore via `--sysbuild` build + flash
+  `build/can_logger_mcuboot`).
+- 2026-09-03 (session 4): found a latent bug in the shared CLP layer — the
+  `CLP_CANF_*` flag bits are NOT numerically equal to Zephyr's `CAN_FRAME_*`
+  (the clp_proto.h comment claiming a 1:1 map was wrong). Build-only usb_cdc
+  never hit it (self-test round-trips CLP<->CLP). Fixed: explicit translation
+  in `apps/can_logger/src/main.c`; comment corrected in `clp_proto.h`.
+- 2026-09-03 (session 4): TOOLING — never let `timeout`/taskkill hard-kill a
+  running `JLink.exe`; it wedges the J-Link OB USB endpoint (every later
+  connect hangs at `JLINK_OpenEx`) and only a physical Debug-USB replug clears
+  it. Never put a bare `h` in a JLink script without a following `g` (leaves the
+  CPU halted -> board stops ACKing -> PCAN BUSHEAVY, which looks like a wiring
+  fault but is not). Good flash script: `connect / loadfile / r / g / exit`.
+  Also: `python script > file` block-buffers — use `python -u` for captures.
