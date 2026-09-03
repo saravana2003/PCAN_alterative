@@ -29,10 +29,15 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-/* Boot self-transmit: CLASSIC frame only. The bench analyser is a PCAN-USB
- * (classic CAN only); an FD/BRS frame on that bus triggers error frames and an
- * un-maskable auto-retransmit storm (this driver has no CAN_MODE_ONE_SHOT).
- * Flip to 1 once a CAN-FD-capable analyser is on the bench. See STATE.md §3.
+/* Boot self-transmit: a bench convenience that proves the TX path on power-up.
+ * OFF by default: a logger should not inject traffic onto a bus that may not
+ * be live yet. With no peer ACKing, the RA controller auto-retransmits (no
+ * CAN_MODE_ONE_SHOT on this driver) and one frame becomes a sustained error
+ * storm -> BUS_OFF. Set to 1 only for bench TX testing with a peer present.
+ */
+#define BOOT_TX_SELFTEST 0
+/* If BOOT_TX_SELFTEST: CLASSIC frame only (the bench PCAN-USB is classic-only;
+ * an FD/BRS frame there storms even harder). Flip to 1 with FD-capable gear.
  */
 #define BOOT_TX_USE_FD 0
 
@@ -173,6 +178,7 @@ static void pump_thread(void *a, void *b, void *c)
 	ARG_UNUSED(c);
 
 	int64_t last_status = k_uptime_get();
+	unsigned int status_ticks = 0;
 
 	for (;;) {
 		struct canlog_frame f;
@@ -193,6 +199,13 @@ static void pump_thread(void *a, void *b, void *c)
 		if (k_uptime_get() - last_status >= 1000) {
 			last_status = k_uptime_get();
 			send_status();
+			/* Re-announce every 5 s so a host attaching mid-run
+			 * still learns the fw version (HELLO is otherwise
+			 * boot-only).
+			 */
+			if (++status_ticks % 5U == 0U) {
+				clp_uart_send_hello();
+			}
 		}
 	}
 }
@@ -225,7 +238,8 @@ int main(void)
 			K_PRIO_PREEMPT(8), 0, K_NO_WAIT);
 	k_thread_name_set(&pump_data, "clp_pump");
 
-	/* Boot-time self-transmit: proves the TX path against the bench rig. */
+#if BOOT_TX_SELFTEST
+	/* Bench-only: prove the TX path on power-up. Needs a peer ACKing. */
 	struct canlog_frame boot_tx = {
 		.id = 0x123,
 		.dlc = 8,
@@ -244,6 +258,7 @@ int main(void)
 	if (ret != 0) {
 		LOG_WRN("boot self-TX returned %d (no bus / no ACK?)", ret);
 	}
+#endif
 
 	LOG_INF("can_logger integrated: CAN-FD <-> CLP on the console UART");
 	return 0;

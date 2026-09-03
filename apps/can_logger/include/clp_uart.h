@@ -47,6 +47,12 @@ int clp_uart_init(void);
 void clp_uart_set_tx_handler(clp_uart_tx_request_cb_t cb, void *user_data);
 
 /**
+ * @brief Queue a HELLO frame. Sent once by clp_uart_init(); call again
+ *        periodically so a host that attaches mid-run learns the fw version.
+ */
+void clp_uart_send_hello(void);
+
+/**
  * @brief Queue a received CAN frame for the host as CLP_MSG_CAN_RX.
  *
  * Non-blocking. @retval 0 queued, -ENOSPC dropped (ring full), <0 encode error.

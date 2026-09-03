@@ -12,15 +12,18 @@ HARDWARE BRING-UP IS COMPLETE.** Steps 0/1/2/3 PASS, Step 4 (flash) DROPPED
 (scope change), **Step 5 (Ethernet/DoIP) PASS**, **Step 6 (MCUboot) PASS**.
 Every remaining capability the project cares about is proven on real silicon.
 
-**Session 4 (2026-09-03): CAN <-> host integration DONE + HW-verified.**
-`apps/can_logger` now wires the Phase 2A CAN-FD driver to the Phase 2C CLP
-protocol over the console UART (COM12). On hardware: live PCAN frames (std
-0x123 + ext 0x18DAF110) decoded by `host/clp_client.py` with zero CRC/COBS
-errors and zero drops; host->board CAN_TX (0x7DF) reached the bus and PCAN
-received it; HELLO + 1 Hz STATUS work. Board is currently running this PLAIN
-image (MCUboot overwritten — restore with `west build --sysbuild` +
-`west flash -d build/can_logger_mcuboot` when needed). Full detail: Session 4
-entry below.
+**Session 4 (2026-09-03): CAN <-> host integration + GUI + MCUboot, all
+HW-verified.** `apps/can_logger` wires the Phase 2A CAN-FD driver to the Phase
+2C CLP protocol over the console UART (COM12). On hardware: live PCAN frames
+(std 0x123 + ext 0x18DAF110) decoded by the host tools with zero CRC/COBS
+errors and zero drops; host->board CAN_TX (0x7DF) reached the bus + PCAN RX;
+HELLO (now periodic) + 1 Hz STATUS. **`host/clp_gui.py`** (tkinter) verified by
+the user — bus table, STATUS panel, TX form all work. **MCUboot restored**
+(`mcuboot.conf` silences its console so COM12 stays clean CLP); signed image
+chainloads, CLP stream has 0 framing errors through the bootloader. The boot
+self-TX is now default-OFF (`BOOT_TX_SELFTEST 0`) — it storms the bus to
+BUS_OFF when nothing ACKs. Board runs MCUboot + signed integrated can_logger.
+Full detail: Session 4 entries below.
 
 **SCOPE CHANGE (user, 2026-09-01):** on-board flash logging is **out of scope**.
 The goal is now simply "USB + CAN + Ethernet work on the board" — all three done.
@@ -29,14 +32,14 @@ NOR). `can_logger` still keeps its SRAM ring; nothing was ripped out. CLAUDE.md'
 Mission paragraph still says "data logging" — leave it, but this is the operative
 direction now.
 
-**Do this next:** the firmware transport now works end-to-end. Remaining:
-(a) a real **host GUI** on top of `host/clp_client.py` (the CLP decode/encode +
-COBS + CRC-16/X-25 are done and HW-proven there); (b) **Phase 6 documentation**
-(BITS WILP ESD report). Optional polish: higher UART baud (currently 115200 —
-`current-speed` in the overlay) if frame-rate headroom is wanted; restore the
-MCUboot sysbuild image; re-run the Ethernet build once (needs SW1-5 ON / SW1-3
+**Do this next:** firmware transport, host GUI and MCUboot are all done and
+HW-proven. The big remaining item is **Phase 6 — the BITS WILP ESD report**
+(PROMPTS.md final phase); every deliverable it maps to now has real hardware
+results. Give it its own session. Optional polish only: higher UART baud
+(115200 now — `current-speed` in the overlay) for frame-rate headroom; a real
+project MCUboot signing key; re-run the Ethernet build once (SW1-5 ON / SW1-3
 OFF + transceiver wires off P704/P705). Board is in the CAN bench config
-(SW1-7 ON only, transceiver on P704/P705).
+(SW1-7 ON only, transceiver on P704/P705), running MCUboot + signed can_logger.
 
 **Six things that will otherwise waste your time:**
 
@@ -159,8 +162,39 @@ available".
   3. One serial reader at a time — overlapping `clp_client.py` runs =
      `PermissionError(13) Access is denied` on COM12.
 - Scratchpad helpers (recreate from git/these notes): `reset.jlink`
-  (connect/r/g/q), `f.jlink` (connect/loadfile/r/g/exit). `host/clp_client.py`
-  is committed, not scratchpad.
+  (connect/r/g/q), `f.jlink` (connect/loadfile/r/g/exit),
+  `fmb.jlink` (erase 0x02000000..0x020FFFFF + loadfile mcuboot.hex + loadfile
+  zephyr.signed.hex + r/g). `host/` is committed, not scratchpad.
+
+#### Session 4 continued — host GUI + MCUboot restored
+- **`host/clp_gui.py` (NEW) — tkinter desktop GUI, HW-verified.** PCAN-View-style
+  aggregated bus table (row per CAN ID + count + cycle time), STATUS/Link panel,
+  event log, TX form. Codec factored into `host/clp.py` (shared with
+  `clp_client.py`; `crc16_x25` checked against the standard 0x906E). User ran it:
+  0x123 + 0x18DAF110 rows with correct ~1000 ms cycle, TX 0x7DF -> PCAN + ACK,
+  `frames_ok=233 crc_err=0 framing_err=0`.
+  - **tkinter was broken on this box** — `C:\Python312` missing its `tcl\`
+    script dir (`_tkinter.pyd` + DLLs were present). Fixed by copying
+    `%LOCALAPPDATA%\Programs\Python\Python312\tcl` -> `C:\Python312\tcl`
+    (both 3.12.3 / Tcl 8.6.13). Same class of damage as the session-2 `Lib`.
+- **MCUboot RESTORED over the integrated image.** `apps/can_logger/sysbuild/
+  mcuboot.conf` (NEW) sets `CONFIG_UART_CONSOLE=n` / `BOOT_BANNER=n` /
+  `MCUBOOT_LOG_LEVEL_OFF` so the bootloader doesn't spray ASCII onto the CLP
+  UART. `west build --sysbuild -p always` exit 0: mcuboot 37492 B, signed
+  can_logger 51428 B of slot0. Flashed both domains via `fmb.jlink`; on
+  hardware: signed image chainloads, **CLP stream on COM12 has 0 framing errors**
+  (bootloader is silent), periodic HELLO works, `bus=ERROR_ACTIVE`.
+- **`BOOT_TX_SELFTEST` now defaults to 0** (`apps/can_logger/src/main.c`). The
+  boot self-TX of 0x123 with no peer ACKing storms the RA controller into
+  BUS_OFF (no `CAN_MODE_ONE_SHOT`) — a logger must not inject traffic on a bus
+  that may not be live. Seen this session as `bus=BUS_OFF tx_err=224...` right
+  after the first MCUboot flash (PCAN not acking at that moment). With it off,
+  boot is clean: `bus=ERROR_ACTIVE`, all error counters 0. Kept behind the
+  `#define` for bench TX testing.
+- **Periodic HELLO** — `clp_uart_send_hello()` made public; `pump_thread` calls
+  it every 5th STATUS so a host attaching mid-run still gets the fw version.
+- Board is now running **MCUboot + signed integrated can_logger**. Plain image
+  also rebuilt (`build/can_logger`, 50740 B) and kept in sync.
 
 ### Session 3 (2026-09-01) — Step 5 Ethernet / DoIP PASS; flash logging dropped
 - **SCOPE CHANGE (user):** flash logging is out of scope. Goal = USB + CAN +
@@ -1635,3 +1669,22 @@ PowerShell:
   CPU halted -> board stops ACKing -> PCAN BUSHEAVY, which looks like a wiring
   fault but is not). Good flash script: `connect / loadfile / r / g / exit`.
   Also: `python script > file` block-buffers — use `python -u` for captures.
+- 2026-09-03 (session 4): **host GUI done** — `host/clp_gui.py` (tkinter, stdlib
+  + pyserial). Codec shared via `host/clp.py`. User-verified on hardware (bus
+  table, STATUS, TX). tkinter needed a fix: `C:\Python312\tcl\` was missing —
+  copied from the other 3.12.3 install (build-env-gotchas memory).
+- 2026-09-03 (session 4): **MCUboot restored** over the integrated image.
+  `apps/can_logger/sysbuild/mcuboot.conf` (new) turns off the bootloader's UART
+  console/banner/log so it doesn't corrupt the CLP byte stream on COM12 — HW
+  check shows 0 framing errors through the chainload. Still OVERWRITE_ONLY,
+  still the module debug signing key (a real key = one line
+  `SB_CONFIG_BOOT_SIGNATURE_KEY_FILE`, still a report item).
+- 2026-09-03 (session 4): **boot self-TX (`BOOT_TX_SELFTEST`) defaulted OFF.**
+  A logger must not transmit onto a possibly-dead bus: with no ACK the RA
+  controller auto-retransmits (no `CAN_MODE_ONE_SHOT`) into a self-sustaining
+  BUS_OFF storm. Observed live this session (`tx_err` ramp to 224, `bus=BUS_OFF`)
+  right after a MCUboot flash while PCAN happened not to be acking. Kept behind
+  the `#define` for bench TX proof. Host-initiated `CAN_TX` has the same hazard
+  by nature — that one is the operator's call, documented.
+- 2026-09-03 (session 4): periodic HELLO — `pump_thread` re-emits HELLO every
+  5 s so a host attaching after boot still learns the fw string (was boot-only).

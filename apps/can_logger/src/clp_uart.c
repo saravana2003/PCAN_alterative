@@ -133,7 +133,7 @@ int clp_uart_send_status(const struct clp_status *st)
 	return tx_push(wire, (size_t)n);
 }
 
-static void send_hello(void)
+void clp_uart_send_hello(void)
 {
 	uint8_t wire[CLP_MAX_WIRE];
 	int n = clp_encode_hello(tx_seq++, CLP_UART_FW_VERSION,
@@ -307,7 +307,7 @@ int clp_uart_init(void)
 
 	uart_irq_rx_enable(uart_dev);
 
-	send_hello();
+	clp_uart_send_hello();
 
 	LOG_INF("CLP-over-UART up on %s", uart_dev->name);
 	return 0;
